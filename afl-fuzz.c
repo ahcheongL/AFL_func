@@ -81,7 +81,7 @@
 /* Lots of globals, but mostly for the status UI and other things where it
    really makes no sense to haul them around as function parameters. */
 
-u64 totalTimeout = 10 * 60 * 60 * 1000;
+u64 totalTimeout = 72 * 60 * 60 * 1000;
 
 EXP_ST u8 *in_dir,                    /* Input directory with test cases  */
           *out_file,                  /* File to fuzz, if any             */
@@ -241,6 +241,7 @@ static struct func ** funclist;			/* list of func in the program      */
 static u32 num_func;
 
 static u32 target_func;
+static u8 random_pick;
 static u32 prev_target_func;
 // function relevance variables end
 
@@ -279,6 +280,7 @@ struct queue_entry {
   u32 tc_ref;                         /* Trace bytes ref count            */
 	double relscore;
 	u64 numOfExec;
+	u32 discovered;
 
   struct queue_entry *next,           /* Next element, if any             */
                      *next_100;       /* 100 elements ahead               */
@@ -706,8 +708,6 @@ static u8* DMS(u64 val) {
 static u8* DTD(u64 cur_ms, u64 event_ms) {
 
   static u8 tmp[64];
-	static u32 r_h = 0;
-	static u64 r_10m = 0;
   u64 delta;
   s32 t_d, t_h, t_m, t_s;
 
@@ -719,23 +719,6 @@ static u8* DTD(u64 cur_ms, u64 event_ms) {
   t_h = (delta / 1000 / 60 / 60) % 24;
   t_m = (delta / 1000 / 60) % 60;
   t_s = (delta / 1000) % 60;
-
-	if ((initial_fuzzing == 2) && !direct_start && delta >= (totalTimeout/10)){
-		direct_start = 1;
-	}
-	if (r_h < t_h) r_h = t_h;
-	if (t_h == r_h && outdir_set){
-		record_relevance(t_h);
-		r_h ++;
-	}
-	if (((delta / 1000 / 60) - r_10m) >= 10 && outdir_set){
-		record_score();
-		r_10m = delta / 1000/ 60;		
-	}
-
-	if (delta >= totalTimeout){ //24 hours, terminate
-		stop_soon = 1;
-	}
 
   sprintf(tmp, "%s days, %u hrs, %u min, %u sec", DI(t_d), t_h, t_m, t_s);
   return tmp;
@@ -837,6 +820,7 @@ static void add_to_queue(u8* fname, u32 len, u8 passed_det) {
 	q->covered_func = ck_alloc(sizeof(u8) * num_func);
 	q->relscore = 0.0;
 	q->numOfExec = 0;
+	q->discovered = 0;
 	memset(q->covered_func, 0, sizeof(u8) * num_func);
 
   if (q->depth > max_depth) max_depth = q->depth;
@@ -1339,7 +1323,10 @@ static void update_bitmap_score(struct queue_entry* q) {
 	cheong
 */
 static void select_target(){
+	int i,i2;
+	double mincov = 1.0;
 	target_func = UR(num_func);
+	random_pick = 1;
 	if (UR(100) <= 90){
 		for (i = 0; i < num_func; i++){
 			u32 covered_node = 0;
@@ -1348,9 +1335,10 @@ static void select_target(){
 			}
 			double cov = ((double) covered_node) / ((double)funclist[i]->numOfNodes);
 			funclist[i]-> cov = cov;
-	 		if (mincov > cov && (covered_node >= 2)){
+	 		if (mincov > cov && (cov >= 0.1) && covered_node >= 5 && strcmp("main",funclist[i]->name) ){
 				mincov = cov;
 				target_func = i;
+				random_pick = 0;
 			}
 		}
 	}
@@ -1383,8 +1371,7 @@ static void select_target(){
 static void cull_queue(void) {
   struct queue_entry* q;
   static u8 temp_v[MAP_SIZE >> 3];
-	double mincov = 1.0;
-  u32 i,i2;
+	u32 i;
 
   if (dumb_mode || !score_changed) return;
 
@@ -1401,7 +1388,6 @@ static void cull_queue(void) {
     q->favored = 0;
     q = q->next;
   }
-
 	
   /* Let's see if anything in the bitmap isn't captured in temp_v.
      If yes, and if it has a top_rated[] contender, let's use it. */
@@ -2355,7 +2341,7 @@ EXP_ST void init_forkserver(char** argv) {
 /* Execute target application, monitoring for timeouts. Return status
    information. The called program will update trace_bits[]. */
 
-static u8 run_target(char** argv, u32 timeout, struct queue_entry * q) {
+static u8 run_target(char** argv, u32 timeout) {
 
   static struct itimerval it;
   static u32 prev_timed_out = 0;
@@ -2514,7 +2500,7 @@ static u8 run_target(char** argv, u32 timeout, struct queue_entry * q) {
 
   total_execs++;
 
-	q->numOfExec++;
+	if (queue_cur) queue_cur->numOfExec ++;
 
   /* Any subsequent operations on trace_bits must not be moved by the
      compiler below this point. Past this location, trace_bits[] behave
@@ -2672,7 +2658,7 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
 
     write_to_testcase(use_mem, q->len);
 
-    fault = run_target(argv, use_tmout, NULL);
+    fault = run_target(argv, use_tmout);
 
 		//record node cov - cheong
 		u32 i;
@@ -3320,7 +3306,7 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
 
         u8 new_fault;
         write_to_testcase(mem, len);
-        new_fault = run_target(argv, hang_tmout, );
+        new_fault = run_target(argv, hang_tmout);
 
         /* A corner case that one user reported bumping into: increasing the
            timeout actually uncovers a crash. Make sure we don't discard it if
@@ -3979,6 +3965,8 @@ dir_cleanup_failed:
 
 static void check_term_size(void);
 
+static void record_relevance(void);
+static void record_score(void);
 
 /* A spiffy retro stats screen! This is called every stats_update_freq
    execve() calls, plus in several other circumstances. */
@@ -3988,6 +3976,8 @@ static void show_stats(void) {
   static u64 last_stats_ms, last_plot_ms, last_ms, last_execs;
 	static u64 last_rec_ms;
   static double avg_exec;
+	static u64 record_hour = 0;
+	static u64 record_10m = 0;
   double t_byte_ratio, stab_ratio;
 
   u64 cur_ms;
@@ -3997,6 +3987,28 @@ static void show_stats(void) {
   u8  tmp[256];
 
   cur_ms = get_cur_time();
+
+	//cheong
+	u64 tmpdelta = cur_ms - start_time;
+	u64 tmp_h = tmpdelta / 1000 / 60 / 60;
+	u64 tmp_m = tmpdelta / 1000 / 60;
+	if ((initial_fuzzing == 2) && !direct_start && (tmpdelta >= (totalTimeout/10))){
+		direct_start = 1;
+	}
+	if (record_hour < tmp_h) record_hour = tmp_h;
+	if (tmp_h >= record_hour && outdir_set){
+		record_relevance();
+		record_hour ++;
+	}
+	if (record_10m  < tmp_m) record_10m = tmp_m;
+	if (tmp_m >= record_10m && outdir_set){
+		record_score();
+		record_10m += 1;
+	}
+
+	if (tmpdelta >= totalTimeout){ //24 hours, terminate
+		stop_soon = 1;
+	}
 
   /* If not enough time has passed since last UI update, bail out. */
 
@@ -4310,20 +4322,14 @@ static void show_stats(void) {
   SAYF (bSTG bV bSTOP "  total tmouts : " cRST "%-22s " bSTG bV "\n", tmp);
 
 	//cheong
-	if (direct_start){	
-		sprintf(tmp, "%s, cov : %lf, selected : %u", funclist[target_func] -> name,
+	if (!direct_start){
+		sprintf(tmp, "Directing is not started yet!");
+		SAYF(bVR bH cCYA bSTOP "%-50s" bSTG bV "\n", tmp);
+	}
+	sprintf(tmp, "%s, cov : %lf, selected : %u", funclist[target_func] -> name,
 						funclist[target_func] -> cov, funclist[target_func] -> selected);
-	} else {
-		sprintf(tmp, "N/A");
-	}
-
 	SAYF(bV bSTOP "  current target function : " cRST "%-50s" bSTG bV "\n", tmp);
-
-if (direct_start){	
-		sprintf(tmp, "%lf", queue_cur ->relscore );
-	} else {
-		sprintf(tmp, "N/A");
-	}
+	sprintf(tmp, "%lf", queue_cur ->relscore );
 
 	SAYF(bV bSTOP "  current test case score : " cRST "%-50s" bSTG bV "\n", tmp);
 
@@ -4649,7 +4655,7 @@ static u8 trim_case(char** argv, struct queue_entry* q, u8* in_buf) {
 
       write_with_gap(in_buf, q->len, remove_pos, trim_avail);
 
-      fault = run_target(argv, exec_tmout, NULL);
+      fault = run_target(argv, exec_tmout);
       trim_execs++;
 
       if (stop_soon || fault == FAULT_ERROR) goto abort_trimming;
@@ -4742,7 +4748,7 @@ EXP_ST u8 common_fuzz_stuff(char** argv, u8* out_buf, u32 len) {
 
   write_to_testcase(out_buf, len);
 
-  fault = run_target(argv, exec_tmout, NULL);
+  fault = run_target(argv, exec_tmout);
 
   if (stop_soon) return 1;
 
@@ -4768,7 +4774,9 @@ EXP_ST u8 common_fuzz_stuff(char** argv, u8* out_buf, u32 len) {
 
   /* This handles FAULT_ERROR for us: */
 
-  queued_discovered += save_if_interesting(argv, out_buf, len, fault);
+	u8 disc = save_if_interesting(argv, out_buf, len, fault);
+  queued_discovered += disc;
+	queue_cur->discovered += disc;
 
   if (!(stage_cur % stats_update_freq) || stage_cur + 1 == stage_max)
     show_stats();
@@ -4884,7 +4892,6 @@ static u32 calculate_score(struct queue_entry* q) {
   }
 
 	//cheong : calculate score based on its function relevance
-	if (direct_start){
 		double score;
 		u32 j = MAP_SIZE;
 		u32 numOfCoveredNodes = 0;
@@ -4905,7 +4912,7 @@ static u32 calculate_score(struct queue_entry* q) {
 				}
 			}
 		}
-		//get number of edge covered
+		//get number of nodes covered
 		while (j--){
 			if (trace_bits[j]){
 				numOfCoveredNodes++;
@@ -4925,8 +4932,11 @@ static u32 calculate_score(struct queue_entry* q) {
 			funclist[target_func] -> maxscore = numOfCoveredFuncNodes;
 		} 
 		score = (double) numOfCoveredFuncNodes / (funclist[target_func]-> maxscore);
+		if (isnan(score)) score = 0;
 		double relscore = pow(2.0, 10.0*(score - 0.5));
+		//if (random_pick) relscore = 1.0;
 		q->relscore = relscore;
+	if (direct_start) {
 		perf_score *= relscore;
 	}
   /* Make sure that we don't go over limit. */
@@ -5262,6 +5272,8 @@ static u8 fuzz_one(char** argv) {
    * PERFORMANCE SCORE *
    *********************/
 
+	//set trace_bits to the execution of current test case before calculating score.
+	common_fuzz_stuff(argv, out_buf, len);
   orig_perf = perf_score = calculate_score(queue_cur);
 
   /* Skip right away if -d is given, if we have done deterministic fuzzing on
@@ -6917,7 +6929,7 @@ static void sync_fuzzers(char** argv) {
 
         write_to_testcase(mem, st.st_size);
 
-        fault = run_target(argv, exec_tmout, NULL);
+        fault = run_target(argv, exec_tmout);
 
         if (stop_soon) return;
 
@@ -7788,32 +7800,37 @@ void record_func_cov(){
 	fclose(f);
 }
 
-void record_score(){
+static void record_score(){
 	static int t = 0;
 	u8 * fn = alloc_printf("%s/score/score-%d.txt", out_dir, t);
 	t++;
 	FILE* f2 = fopen(fn, "w");
+	if (f2 == NULL) PFATAL("Can't not open '%s'", fn);
 	fprintf(f2, "target : %s, cov : %lf\n", funclist[target_func]->name, funclist[target_func]->cov);
+	fprintf(f2, "TCid, relscore, num Of Exec., num Of Discovered\n");
 	struct queue_entry * q = queue;
+	int id = 0;
 	while(q){
-		fprintf(f2, "name : %s, relscore : %lf, numOfExec : %llu\n", q->fname, q->relscore, q->numOfExec);
+		fprintf(f2, "%d, %lf, %llu, %u\n", id++, q->relscore, q->numOfExec, q->discovered);
 		q = q->next;
 	}
 	ck_free(fn);
 	fclose(f2);
 }
 
-void record_relevance(int t){
+static void record_relevance(){
   FILE* f;
+	static int t = 0;
 	u8 * fn = alloc_printf("%s/relevance/relevance-%d.txt", out_dir, t);
+	t++;
 	s32 fd;
 	fd = open(fn, O_WRONLY | O_CREAT| O_EXCL, 0600);
-	ck_free(fn);
 
 	if (fd < 0) return;
 
 	f = fdopen(fd, "w");
-	if (!f){ close(fd); return; }
+	if (!f){ close(fd); PFATAL("Can't not open '%s'", fn);}
+	ck_free(fn);
 
 	fprintf(f,"target func, second func, relevance, node coverage\n");
 	//record initial relevance - cheong
@@ -7883,13 +7900,16 @@ void check_func_file(void){
 		unsigned int func_idx = 0;
 		unsigned int num_func_check = 0;
 		unsigned char func_line = 1;
-		fscanf(funcf, "%u\n", &num_func);
+		if(fscanf(funcf, "%u\n", &num_func) != 1)
+			printf("Warning, the FInfo.txt file can be ill-formatted file");
+		
 		funclist = (struct func **) malloc (sizeof(struct func *) * num_func);
 		if (funclist == NULL) FATAL("malloc failed");
 		while(!feof(funcf)){
 			if(func_idx >= num_func) break;
 			if (func_line){ //function line
-				fscanf(funcf, "%s %u\n", func_name,&num_node);
+				if(fscanf(funcf, "%s %u\n", func_name,&num_node) != 2)
+					printf("Warning, the FInfo.txt file can be ill-formatted file");
 				if (num_node){
 					num_func_check ++;
 					funclist[func_idx] = (struct func *) malloc (sizeof(struct func));
@@ -7907,7 +7927,8 @@ void check_func_file(void){
 				}
 			} else { // node line
 				u32 node_id = 0;
-				fscanf(funcf, "%d\n", &node_id);
+				if(fscanf(funcf, "%d\n", &node_id) != 1)
+					printf("Warning, the FInfo.txt file can be ill-formatted file");
 				(funclist[func_idx - 1] -> nodes)[num_node - 1] = node_id;
 				num_node--;
 				if (!num_node) func_line++;
@@ -8383,9 +8404,7 @@ int main(int argc, char** argv) {
   cull_queue();
 
 	//select a function as target with node coverage. - cheong
-	if (direct_start){
-		select_target();
-	}
+	select_target();
 
   show_init_stats();
 
@@ -8411,9 +8430,7 @@ int main(int argc, char** argv) {
     cull_queue();
 		
 		//select a function as target with node coverage. - cheong
-		if (direct_start){
-			select_target();
-		}
+		select_target();
 
     if (!queue_cur) {
 

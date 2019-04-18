@@ -2,8 +2,10 @@ import sys
 NODETHRES = 0
 
 fname = sys.argv[1]
+oname = sys.argv[2]
+
 f = open(fname, 'r');
-o = open(".".join(fname.split('.')[:len(fname.split('.'))-1]) + "-pro.txt", "w");
+o = open(oname, "w");
 
 funcline = 1
 numfunc = 0
