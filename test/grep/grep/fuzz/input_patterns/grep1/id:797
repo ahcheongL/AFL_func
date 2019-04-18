@@ -1,1 +1,0 @@
-[-e 12345 -e abcde -f ../inputs/input_1.dat ../inputs/grep1.dat
