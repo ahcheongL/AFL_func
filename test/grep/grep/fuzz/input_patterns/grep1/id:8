@@ -1,0 +1,1 @@
+-E -c '[^a-z\]' ../inputs/grep1.dat

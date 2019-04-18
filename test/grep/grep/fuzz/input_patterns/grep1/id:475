@@ -1,0 +1,1 @@
+-G ' ":xdigit:\]", is_xdigit' ../inputs/grep1.dat

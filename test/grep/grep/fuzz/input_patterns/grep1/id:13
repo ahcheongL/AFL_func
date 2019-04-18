@@ -1,0 +1,1 @@
+-E "[[:cntrl:\]\]" ../inputs/grep1.dat

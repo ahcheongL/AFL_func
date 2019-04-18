@@ -1,0 +1,1 @@
+-E '[[:xdigit:\]\]' ../inputs/grep1.dat
