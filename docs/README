@@ -14,6 +14,19 @@ To run afl:
 
 /path/to/afl/afl-fuzz -i /input/dir/ -o /output/dir/ -F FInfo-pre.txt -I 0 -- /subject/executable @@
 
+
+To compile SIR benchmark programs with argument fuzzing:
+add :
+#include "/path/to/afl/experimental/argv_fuzzing/argv-fuzz-inl.h"
+to the file containig main(),
+add :
+AFL_INIT_SIR();
+near the very beginning of main().
+
+Then, compile with afl-clang-fast, preprocess FInfo.txt with FInfo.py,
+run afl:
+/path/to/afl/afl-fuzz -i /input/dir/ -o /output/dir/ -F FInfo-pre.txt -I 0 ./subject/executable
+
 ==================
 american fuzzy lop
 ==================

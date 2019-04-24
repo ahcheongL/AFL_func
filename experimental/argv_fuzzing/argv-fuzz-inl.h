@@ -47,6 +47,13 @@
 #define MAX_CMDLINE_LEN 100000
 #define MAX_CMDLINE_PAR 1000
 
+#define AFL_INIT_SIR() do { \
+		char in_buf_afl [100000]; \
+		if (read(0, in_buf_afl, 100000 - 2) < 0); \
+		afl_init_argv_SIR(&argc, in_buf_afl, argv); \
+		if (!argc) argc = 1; \
+	} while (0)
+
 static char** afl_init_argv(int* argc) {
 
   static char  in_buf[MAX_CMDLINE_LEN];
@@ -74,6 +81,42 @@ static char** afl_init_argv(int* argc) {
   return ret;
 
 }
+
+static void afl_init_argv_SIR(int* argc, char *in_buf, char ** argv) {
+  char* ptr = in_buf;
+  char *tmpptr;
+  int   rc  = 0;
+  char input_read = 0;
+
+  while (*ptr) {
+    if (input_read && *ptr != ']'){
+      argv[rc] = ptr;
+      rc++;
+      tmpptr = ptr;
+			//remove last ']'
+      while(*tmpptr != ']' && *tmpptr != '\0' && *tmpptr != ' ') tmpptr++;
+      if (*tmpptr == ']') {
+        *tmpptr = '\0';
+        break;
+      }
+    }
+    if (*ptr == '-' && *(ptr+1) == 'P'){
+			//input arguments start
+      input_read++;
+      rc++;
+      while( *ptr != '[') ptr++;
+      ptr++;
+      while (*ptr == ' ') ptr++;
+      continue;
+    }
+    while (*ptr != ' ' && *ptr != '\0') ptr++;
+    *ptr = '\0';
+    ptr++;
+    while (*ptr == ' ') ptr++;
+  }
+  *argc = rc;
+}
+
 
 #undef MAX_CMDLINE_LEN
 #undef MAX_CMDLINE_PAR
