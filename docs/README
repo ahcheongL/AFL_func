@@ -22,7 +22,7 @@ To compile SIR benchmark programs with argument fuzzing, add:
 ```
 to the file containig main(), add :
 ```
-	AFL_INIT_SIR();
+AFL_INIT_SIR();
 ```
 near the very beginning of main().
 

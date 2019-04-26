@@ -7,17 +7,20 @@ outname = sys.argv[3]
 f = open(listfn, 'r')
 
 of = open(outname, 'w')
-of.write("time,line_cov,total_line\n")
+of.write("time,line_cov,branch_cov\n")
 
 efn = "execute.sh"
 
 rec_time_m = 0
+prev_rec_time = 0
+cov_line = ",,\n"
 prev_linen = 0
 fuzz_start = False
 cmd = []
 linen = 0
 
 def executeTC(tcn):
+	global prev_linen, prev_rec_time, cov_line
 	print("Executing with time : " + str(rec_time_m) + ", linen : " + str(tcn))
 	ef = open(efn, 'w')
 	f2 = open(listfn,'r')
@@ -35,24 +38,19 @@ def executeTC(tcn):
 	subprocess.run(cmd)
 	cmd = ["bash", "./execute.sh"]
 	subprocess.run(cmd)
-	cmd = ["gcov" , "-f", "grep.c"]
+	cmd = ["gcov" ,"-b", "grep.c"]
 	try:
 		res = subprocess.check_output(cmd)
 	except subprocess.CalledProcessError as e:
 		res = e.output
-	res = res.decode("utf-8")
-	f3 = open("cov.txt", "w")
-	f3.write(res)
-	f3.close()
-	cmd = ["python", "/home/cheong/AFL_func/util/cov.py", "cov.txt"]
-	try:
-		res = subprocess.check_output(cmd)
-	except subprocess.CalledProcessError as e:
-		res = e.output
-	res = res.decode("utf-8")
-	res = res[:len(res)-1]
-	res = res.split("\n")
-	of.write(str(rec_time_m) + "," + res[1] + ',' + res[0] + "\n")
+	linecov = res.decode("utf-8").split('\n')[1].split(' ')[1].replace("executed:","")
+	branchcov = res.decode("utf-8").split('\n')[3].split(' ')[3].replace("once:", "")
+	while (prev_rec_time < rec_time_m):
+		of.write(str(prev_rec_time) + cov_line)
+		prev_rec_time += 600
+	prev_rec_time = rec_time_m + 600
+	cov_line = "," + linecov + "," + branchcov + "\n"
+	of.write(str(rec_time_m) + cov_line)
 
 
 for line in f.readlines():
@@ -63,8 +61,9 @@ for line in f.readlines():
 		else:
 			new_time_m = int(new_time_m)
 		if (new_time_m >= rec_time_m):
+			rec_time_m = int(new_time_m / 600) * 600
 			executeTC(linen)
-			rec_time_m = rec_time_m + 10	
+			rec_time_m = rec_time_m + 600	
 	linen = linen + 1
 executeTC(linen)
 
