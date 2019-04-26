@@ -81,7 +81,7 @@
 /* Lots of globals, but mostly for the status UI and other things where it
    really makes no sense to haul them around as function parameters. */
 
-u64 totalTimeout = 72 * 60 * 60 * 1000;
+u64 totalTimeout = 10 * 60 * 60 * 1000;
 
 EXP_ST u8 *in_dir,                    /* Input directory with test cases  */
           *out_file,                  /* File to fuzz, if any             */
@@ -232,6 +232,8 @@ struct func {
 	u32 selected;
 	char name[32];
 	u32 maxscore;
+	u64 exec;
+	char recorded;
 };
 char outdir_set = 0;
 
@@ -2501,6 +2503,7 @@ static u8 run_target(char** argv, u32 timeout) {
   total_execs++;
 
 	if (queue_cur) queue_cur->numOfExec ++;
+	if (direct_start) funclist[target_func]->exec ++;
 
   /* Any subsequent operations on trace_bits must not be moved by the
      compiler below this point. Past this location, trace_bits[] behave
@@ -3967,6 +3970,7 @@ static void check_term_size(void);
 
 static void record_relevance(void);
 static void record_score(void);
+static void record_cov (u64);
 
 /* A spiffy retro stats screen! This is called every stats_update_freq
    execve() calls, plus in several other circumstances. */
@@ -3977,7 +3981,7 @@ static void show_stats(void) {
 	static u64 last_rec_ms;
   static double avg_exec;
 	static u64 record_hour = 0;
-	static u64 record_10m = 0;
+	static u64 record_m = 0;
   double t_byte_ratio, stab_ratio;
 
   u64 cur_ms;
@@ -4000,10 +4004,11 @@ static void show_stats(void) {
 		record_relevance();
 		record_hour ++;
 	}
-	if (record_10m  < tmp_m) record_10m = tmp_m;
-	if (tmp_m >= record_10m && outdir_set){
+	if (record_m  < tmp_m) record_m = tmp_m;
+	if (tmp_m >= record_m && outdir_set){
 		record_score();
-		record_10m += 1;
+		record_cov(tmp_m);
+		record_m += 1;
 	}
 
 	if (tmpdelta >= totalTimeout){ //24 hours, terminate
@@ -7356,6 +7361,10 @@ EXP_ST void setup_dirs_fds(void) {
 	tmp = alloc_printf("%s/score/", out_dir);
 	if (mkdir(tmp, 0700)) PFATAL("Unable to create '%s'", tmp);
 	ck_free(tmp);
+
+	tmp = alloc_printf("%s/cov/", out_dir);
+	if (mkdir(tmp, 0700)) PFATAL("Unable to create '%s'", tmp);
+	ck_free(tmp);
 	
 	tmp = alloc_printf("%s/relevance/", out_dir);
 	if (mkdir(tmp, 0700)) PFATAL("Unable to create '%s'", tmp);
@@ -7800,6 +7809,21 @@ void record_func_cov(){
 	fclose(f);
 }
 
+
+static void record_cov(u64 cur_min){
+	u8 * fn = alloc_printf("%s/cov/cov-%s.txt", out_dir, funclist[target_func]->name);
+	FILE* f2 = fopen(fn, "a");
+	if (f2 == NULL) PFATAL("Can't not open '%s'", fn);
+	if (!funclist[target_func]->recorded){
+		fprintf(f2, "min,selected,num Of exec,cov\n");
+		funclist[target_func]->recorded ++;
+	}
+	fprintf(f2, "%llu,%u,%llu,%lf\n",cur_min, funclist[target_func]->selected,
+							funclist[target_func]->exec, funclist[target_func]->cov);
+	ck_free(fn);
+	fclose(f2);
+}
+
 static void record_score(){
 	static int t = 0;
 	u8 * fn = alloc_printf("%s/score/score-%d.txt", out_dir, t);
@@ -7922,6 +7946,8 @@ void check_func_file(void){
 					funclist[func_idx] -> cov = 0.0;
 					funclist[func_idx] -> selected = 0;
 					funclist[func_idx] -> maxscore = 0;
+					funclist[func_idx] -> exec = 0;
+					funclist[func_idx] -> recorded = 0;
 					func_idx++;
 					func_line--;
 				}
