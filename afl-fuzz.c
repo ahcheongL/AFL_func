@@ -4066,9 +4066,15 @@ static void show_stats(void) {
 	//cheong - rec unqi paths, #exec.
 	if (cur_ms - last_rec_ms > 60 * 1000){
 		if (valrecfile != NULL){
-			fprintf(valrecfile, "%llu,%u,%s,%s\n",
+			if (funclist != NULL && funclist[target_func] != NULL){
+				fprintf(valrecfile, "%llu,%u,%s,%u\n",
 						 (cur_ms - start_time) / 1000 / 60,
-						 queued_paths, total_execs, funclist[target_func]->name,DI(current_entry));
+						 queued_paths, funclist[target_func]->name, current_entry);
+			} else {
+				fprintf(valrecfile, "%llu,%u,NONE,%u\n",
+						 (cur_ms - start_time) / 1000 / 60,
+						 queued_paths, current_entry);
+			}
 			last_rec_ms = cur_ms;
 		}
 	}
@@ -4353,8 +4359,8 @@ static void show_stats(void) {
 	sprintf(tmp, "%lf", queue_cur ->relscore );
 	SAYF(bV bSTOP "  current test case score : " cRST "%-50s" bSTG bV "\n", tmp);
 
-	sprintf(tmp, "curSatTime : %s", DTD(cur_ms, curSatTime));
-	SAYF(bV bSTOP cRST " %-50s" bSTG bV "\n", tmp); 
+	sprintf(tmp, "%s", DTD(cur_ms, curSatTime));
+	SAYF(bV bSTOP "curSatTime : " cRST " %-50s" bSTG bV "\n", tmp); 
 
   /* Aaaalmost there... hold on! */
 
