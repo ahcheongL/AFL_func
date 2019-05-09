@@ -31,7 +31,7 @@
 #include "debug.h"
 #include "alloc-inl.h"
 #include "hash.h"
-
+#include <execinfo.h>
 #include <stdio.h>
 #include <unistd.h>
 #include <stdlib.h>
@@ -82,6 +82,8 @@
    really makes no sense to haul them around as function parameters. */
 
 u64 totalTimeout = 10 * 60 * 60 * 1000;
+u64 satTimeout;
+u64 curSatTime = 0;
 
 EXP_ST u8 *in_dir,                    /* Input directory with test cases  */
           *out_file,                  /* File to fuzz, if any             */
@@ -233,8 +235,10 @@ struct func {
 	char name[32];
 	u32 maxscore;
 	u64 exec;
+	char saturated;
 	char recorded;
 };
+
 char outdir_set = 0;
 
 FILE * valrecfile;
@@ -243,8 +247,6 @@ static struct func ** funclist;			/* list of func in the program      */
 static u32 num_func;
 
 static u32 target_func;
-static u8 random_pick;
-static u32 prev_target_func;
 // function relevance variables end
 
 #ifdef HAVE_AFFINITY
@@ -1327,22 +1329,32 @@ static void update_bitmap_score(struct queue_entry* q) {
 static void select_target(){
 	int i,i2;
 	double mincov = 1.0;
-	target_func = UR(num_func);
-	random_pick = 1;
-	if (UR(100) <= 90){
-		for (i = 0; i < num_func; i++){
-			u32 covered_node = 0;
-			for (i2 = 0; i2 < funclist[i]->numOfNodes; i2++){
-				covered_node += funclist[i]->nodecov[i2];
-			}
-			double cov = ((double) covered_node) / ((double)funclist[i]->numOfNodes);
-			funclist[i]-> cov = cov;
-	 		if (mincov > cov && (cov >= 0.1) && covered_node >= 5 && strcmp("main",funclist[i]->name) ){
-				mincov = cov;
-				target_func = i;
-				random_pick = 0;
-			}
+	double prevcov;
+	int selected = 0;
+	u32 prev_target = target_func;
+	for (i = 0; i < num_func; i++){
+		u32 covered_node = 0;
+		for (i2 = 0; i2 < funclist[i]->numOfNodes; i2++){
+			covered_node += funclist[i]->nodecov[i2];
 		}
+		double cov = ((double) covered_node) / ((double)funclist[i]->numOfNodes);
+ 		if (mincov > cov 
+				&& funclist[i]->saturated == 0
+				&& covered_node >= 3 && strcmp("main",funclist[i]->name)){
+			mincov = cov;
+			prevcov = funclist[i] -> cov;
+			selected = 1;
+			target_func = i;
+		}
+		funclist[i]-> cov = cov;
+	}
+	u64 cur_ms = get_cur_time(); 
+	if (!selected || target_func != prev_target
+			|| funclist[target_func] -> cov != prevcov){
+		curSatTime = cur_ms;
+	}
+	if ( (cur_ms - curSatTime) >= satTimeout){
+		funclist[target_func]->saturated = 1;
 	}
 	funclist[target_func]-> selected += 1;
 	//compute function relevance to the target function - cheong
@@ -4000,18 +4012,21 @@ static void show_stats(void) {
 		direct_start = 1;
 	}
 	if (record_hour < tmp_h) record_hour = tmp_h;
-	if (tmp_h >= record_hour && outdir_set){
+
+	if (tmp_h >= record_hour && outdir_set && direct_start){
 		record_relevance();
 		record_hour ++;
 	}
+
 	if (record_m  < tmp_m) record_m = tmp_m;
+
 	if (tmp_m >= record_m && outdir_set){
 		record_score();
 		record_cov(tmp_m);
 		record_m += 1;
 	}
 
-	if (tmpdelta >= totalTimeout){ //24 hours, terminate
+	if (tmpdelta >= totalTimeout){ //timeout, terminate
 		stop_soon = 1;
 	}
 
@@ -4051,9 +4066,9 @@ static void show_stats(void) {
 	//cheong - rec unqi paths, #exec.
 	if (cur_ms - last_rec_ms > 60 * 1000){
 		if (valrecfile != NULL){
-			fprintf(valrecfile, "%llu, uniq_paths : %u, execs : %llu, crash : %llu\n",
+			fprintf(valrecfile, "%llu,%u,%s,%s\n",
 						 (cur_ms - start_time) / 1000 / 60,
-						 queued_paths, total_execs, total_crashes);
+						 queued_paths, total_execs, funclist[target_func]->name,DI(current_entry));
 			last_rec_ms = cur_ms;
 		}
 	}
@@ -4334,9 +4349,12 @@ static void show_stats(void) {
 	sprintf(tmp, "%s, cov : %lf, selected : %u", funclist[target_func] -> name,
 						funclist[target_func] -> cov, funclist[target_func] -> selected);
 	SAYF(bV bSTOP "  current target function : " cRST "%-50s" bSTG bV "\n", tmp);
-	sprintf(tmp, "%lf", queue_cur ->relscore );
 
+	sprintf(tmp, "%lf", queue_cur ->relscore );
 	SAYF(bV bSTOP "  current test case score : " cRST "%-50s" bSTG bV "\n", tmp);
+
+	sprintf(tmp, "curSatTime : %s", DTD(cur_ms, curSatTime));
+	SAYF(bV bSTOP cRST " %-50s" bSTG bV "\n", tmp); 
 
   /* Aaaalmost there... hold on! */
 
@@ -4902,14 +4920,14 @@ static u32 calculate_score(struct queue_entry* q) {
 		u32 numOfCoveredNodes = 0;
 		u32 numOfCoveredFuncNodes = 0;
 		u32 idx1,idx2;
-		u32 relidx[4] = {0, 0, 0, target_func};
-		double rel[3] = {0.0, 0.0, 0.0};
+		u32 relidx[6] = {0, 0, 0, 0, 0, target_func};
+		double rel[5] = {0.0, 0.0, 0.0, 0.0 , 0.0};
 		u8 pass = 0;
 
 		//get top 3 relevant functions
 		for (idx1 = 0; idx1 < num_func; idx1++){
 			double currel = funclist[idx1]->relevance;
-			for (idx2 = 0; idx2 < 3; idx2++){
+			for (idx2 = 0; idx2 < 5; idx2++){
 				if (currel > rel[idx2] && strcmp("main", funclist[idx1]->name)){
 					rel[idx2] = currel;
 					relidx[idx2] = idx1;
@@ -4921,7 +4939,7 @@ static u32 calculate_score(struct queue_entry* q) {
 		while (j--){
 			if (trace_bits[j]){
 				numOfCoveredNodes++;
-				for (idx1 = 0; idx1 < 4; idx1++){
+				for (idx1 = 0; idx1 < 6; idx1++){
 					if(pass){ pass = 0; break;}
 					for (idx2 = 0; idx2 < funclist[relidx[idx1]]->numOfNodes; idx2++){
 						if (funclist[relidx[idx1]]->nodes[idx2] == j){
@@ -4939,7 +4957,6 @@ static u32 calculate_score(struct queue_entry* q) {
 		score = (double) numOfCoveredFuncNodes / (funclist[target_func]-> maxscore);
 		if (isnan(score)) score = 0;
 		double relscore = pow(2.0, 10.0*(score - 0.5));
-		//if (random_pick) relscore = 1.0;
 		q->relscore = relscore;
 	if (direct_start) {
 		perf_score *= relscore;
@@ -5402,6 +5419,12 @@ static u8 fuzz_one(char** argv) {
   stage_finds[STAGE_FLIP1]  += new_hit_cnt - orig_hit_cnt;
   stage_cycles[STAGE_FLIP1] += stage_max;
 
+	//cheong - skip det if it took too much time.
+	if ((get_cur_time() - curSatTime >= satTimeout) && direct_start){
+		if(!queue_cur->passed_det) mark_as_det_done(queue_cur);
+		goto havoc_stage;
+	}
+
   /* Two walking bits. */
 
   stage_name  = "bitflip 2/1";
@@ -5429,6 +5452,11 @@ static u8 fuzz_one(char** argv) {
   stage_finds[STAGE_FLIP2]  += new_hit_cnt - orig_hit_cnt;
   stage_cycles[STAGE_FLIP2] += stage_max;
 
+	//cheong - skip det if it took too much time.
+	if ((get_cur_time() - curSatTime >= satTimeout) && direct_start){
+		if(!queue_cur->passed_det) mark_as_det_done(queue_cur);
+		goto havoc_stage;
+	}
   /* Four walking bits. */
 
   stage_name  = "bitflip 4/1";
@@ -5459,6 +5487,12 @@ static u8 fuzz_one(char** argv) {
 
   stage_finds[STAGE_FLIP4]  += new_hit_cnt - orig_hit_cnt;
   stage_cycles[STAGE_FLIP4] += stage_max;
+
+	//cheong - skip det if it took too much time.
+	if ((get_cur_time() - curSatTime >= satTimeout) && direct_start){
+		if(!queue_cur->passed_det) mark_as_det_done(queue_cur);
+		goto havoc_stage;
+	}
 
   /* Effector map setup. These macros calculate:
 
@@ -5551,6 +5585,11 @@ static u8 fuzz_one(char** argv) {
 
   stage_finds[STAGE_FLIP8]  += new_hit_cnt - orig_hit_cnt;
   stage_cycles[STAGE_FLIP8] += stage_max;
+	
+	if ((get_cur_time() - curSatTime >= satTimeout) && direct_start){
+		if(!queue_cur->passed_det) mark_as_det_done(queue_cur);
+		goto havoc_stage;
+	}
 
   /* Two walking bytes. */
 
@@ -5590,6 +5629,11 @@ static u8 fuzz_one(char** argv) {
   stage_cycles[STAGE_FLIP16] += stage_max;
 
   if (len < 4) goto skip_bitflip;
+	
+	if ((get_cur_time() - curSatTime >= satTimeout) && direct_start){
+		if(!queue_cur->passed_det) mark_as_det_done(queue_cur);
+		goto havoc_stage;
+	}
 
   /* Four walking bytes. */
 
@@ -5624,6 +5668,11 @@ static u8 fuzz_one(char** argv) {
 
   stage_finds[STAGE_FLIP32]  += new_hit_cnt - orig_hit_cnt;
   stage_cycles[STAGE_FLIP32] += stage_max;
+	
+	if ((get_cur_time() - curSatTime >= satTimeout) && direct_start){
+		if(!queue_cur->passed_det) mark_as_det_done(queue_cur);
+		goto havoc_stage;
+	}
 
 skip_bitflip:
 
@@ -5696,6 +5745,11 @@ skip_bitflip:
 
   stage_finds[STAGE_ARITH8]  += new_hit_cnt - orig_hit_cnt;
   stage_cycles[STAGE_ARITH8] += stage_max;
+	
+	if ((get_cur_time() - curSatTime >= satTimeout) && direct_start){
+		if(!queue_cur->passed_det) mark_as_det_done(queue_cur);
+		goto havoc_stage;
+	}
 
   /* 16-bit arithmetics, both endians. */
 
@@ -5791,6 +5845,10 @@ skip_bitflip:
   stage_finds[STAGE_ARITH16]  += new_hit_cnt - orig_hit_cnt;
   stage_cycles[STAGE_ARITH16] += stage_max;
 
+	if ((get_cur_time() - curSatTime >= satTimeout) && direct_start){
+		if(!queue_cur->passed_det) mark_as_det_done(queue_cur);
+		goto havoc_stage;
+	}
   /* 32-bit arithmetics, both endians. */
 
   if (len < 4) goto skip_arith;
@@ -5883,6 +5941,10 @@ skip_bitflip:
   stage_finds[STAGE_ARITH32]  += new_hit_cnt - orig_hit_cnt;
   stage_cycles[STAGE_ARITH32] += stage_max;
 
+	if ((get_cur_time() - curSatTime >= satTimeout) && direct_start){
+		if(!queue_cur->passed_det) mark_as_det_done(queue_cur);
+		goto havoc_stage;
+	}
 skip_arith:
 
   /**********************
@@ -5941,6 +6003,11 @@ skip_arith:
   stage_cycles[STAGE_INTEREST8] += stage_max;
 
   /* Setting 16-bit integers, both endians. */
+	
+	if ((get_cur_time() - curSatTime >= satTimeout) && direct_start){
+		if(!queue_cur->passed_det) mark_as_det_done(queue_cur);
+		goto havoc_stage;
+	}
 
   if (no_arith || len < 2) goto skip_interest;
 
@@ -6009,6 +6076,11 @@ skip_arith:
   stage_cycles[STAGE_INTEREST16] += stage_max;
 
   if (len < 4) goto skip_interest;
+	
+	if ((get_cur_time() - curSatTime >= satTimeout) && direct_start){
+		if(!queue_cur->passed_det) mark_as_det_done(queue_cur);
+		goto havoc_stage;
+	}
 
   /* Setting 32-bit integers, both endians. */
 
@@ -6076,6 +6148,11 @@ skip_arith:
 
   stage_finds[STAGE_INTEREST32]  += new_hit_cnt - orig_hit_cnt;
   stage_cycles[STAGE_INTEREST32] += stage_max;
+	
+	if ((get_cur_time() - curSatTime >= satTimeout) && direct_start){
+		if(!queue_cur->passed_det) mark_as_det_done(queue_cur);
+		goto havoc_stage;
+	}
 
 skip_interest:
 
@@ -6143,6 +6220,11 @@ skip_interest:
   stage_finds[STAGE_EXTRAS_UO]  += new_hit_cnt - orig_hit_cnt;
   stage_cycles[STAGE_EXTRAS_UO] += stage_max;
 
+	if ((get_cur_time() - curSatTime >= satTimeout) && direct_start){
+		if(!queue_cur->passed_det) mark_as_det_done(queue_cur);
+		goto havoc_stage;
+	}
+
   /* Insertion of user-supplied extras. */
 
   stage_name  = "user extras (insert)";
@@ -6193,6 +6275,11 @@ skip_interest:
   stage_cycles[STAGE_EXTRAS_UI] += stage_max;
 
 skip_user_extras:
+
+	if ((get_cur_time() - curSatTime >= satTimeout) && direct_start){
+		if(!queue_cur->passed_det) mark_as_det_done(queue_cur);
+		goto havoc_stage;
+	}
 
   if (!a_extras_cnt) goto skip_extras;
 
@@ -7774,16 +7861,17 @@ EXP_ST void detect_file_args(char** argv) {
 
 //cheong
 void record_init(){
-	u8* fn = alloc_printf("%s/minuate_rec", out_dir);
+	u8* fn = alloc_printf("%s/minuate_rec.csv", out_dir);
 	valrecfile = fopen(fn, "w");	
 	if (valrecfile == NULL) PFATAL("Unable to open '%s'", fn);
+	fprintf(valrecfile,"min,uniq paths,current target func,current test case\n");
 	ck_free(fn);
 }
 
 void record_func_cov(){
 //cheong
 	int idxx;
-  u8* fn = alloc_printf("%s/func_cov", out_dir);
+  u8* fn = alloc_printf("%s/func_cov.csv", out_dir);
   s32 fd;
   FILE* f;
 
@@ -7794,9 +7882,9 @@ void record_func_cov(){
 
   f = fdopen(fd, "w");
 
-	fprintf(f, "function list : \n");
+	fprintf(f, "name,cov,# of nodes, selected\n");
 	for (idxx = 0; idxx < num_func; idxx++){
-		fprintf(f, "name : %s, cov : %lf, #of nodes : %u, selected : %u\n",
+		fprintf(f, "%s,%lf,%u,%u\n",
 						funclist[idxx] -> name,
 						funclist[idxx] -> cov,
 						funclist[idxx] -> numOfNodes,
@@ -7948,6 +8036,7 @@ void check_func_file(void){
 					funclist[func_idx] -> maxscore = 0;
 					funclist[func_idx] -> exec = 0;
 					funclist[func_idx] -> recorded = 0;
+					funclist[func_idx] -> saturated = 0;
 					func_idx++;
 					func_line--;
 				}
@@ -7965,7 +8054,6 @@ void check_func_file(void){
 		
 		if (num_func_check != num_func){
 				num_func = num_func_check;
-				prev_target_func = num_func + 1;
 		}
 		/*
 		u8 idx2 = 0;
@@ -8129,6 +8217,16 @@ static void save_cmdline(u32 argc, char** argv) {
 
 #ifndef AFL_LIB
 
+void handler(int sig){
+	void * array[10];
+	size_t size;
+	size = backtrace(array,10);
+  fprintf(stderr, "Error : signal %d\n", sig);
+  backtrace_symbols_fd(array,size, STDERR_FILENO);
+	exit(1);
+
+}
+
 /* Main entry point */
 
 int main(int argc, char** argv) {
@@ -8141,8 +8239,10 @@ int main(int argc, char** argv) {
   u8  exit_1 = !!getenv("AFL_BENCH_JUST_ONE");
   char** use_argv;
 
+	signal(SIGSEGV, handler);
   struct timeval tv;
   struct timezone tz;
+	satTimeout = totalTimeout * 1 / 100;
 
   SAYF(cCYA "afl-fuzz " cBRI VERSION cRST " by <lcamtuf@google.com>\n");
 
@@ -8392,8 +8492,8 @@ int main(int argc, char** argv) {
   bind_to_free_cpu();
 #endif /* HAVE_AFFINITY */
 
-  check_crash_handling();
-  check_cpu_governor();
+  //check_crash_handling();
+  //check_cpu_governor();
 
   setup_post();
   setup_shm();

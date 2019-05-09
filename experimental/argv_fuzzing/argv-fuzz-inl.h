@@ -35,6 +35,8 @@
 #define _HAVE_ARGV_FUZZ_INL
 
 #include <unistd.h>
+#include <stdlib.h>
+#include <stdio.h>
 
 #define AFL_INIT_ARGV() do { argv = afl_init_argv(&argc); } while (0)
 
