@@ -1,2 +1,15 @@
 *.swp
+*.gcda
 /test
+afl-fuzz
+afl-clang-fast
+afl-clang
+afl-gcc
+as
+afl-g++
+afl-clang++
+afl-analyze
+afl-as
+afl-gotcpu
+afl-showmap
+afl-tmin

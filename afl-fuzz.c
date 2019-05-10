@@ -5426,7 +5426,8 @@ static u8 fuzz_one(char** argv) {
   stage_cycles[STAGE_FLIP1] += stage_max;
 
 	//cheong - skip det if it took too much time.
-	if ((get_cur_time() - curSatTime >= satTimeout) && direct_start){
+	if ( (direct_start && (get_cur_time() - curSatTime >= satTimeout))
+				|| (!direct_start && (get_cur_time() - last_path_time >= satTimeout))){
 		if(!queue_cur->passed_det) mark_as_det_done(queue_cur);
 		goto havoc_stage;
 	}
@@ -5459,7 +5460,8 @@ static u8 fuzz_one(char** argv) {
   stage_cycles[STAGE_FLIP2] += stage_max;
 
 	//cheong - skip det if it took too much time.
-	if ((get_cur_time() - curSatTime >= satTimeout) && direct_start){
+	if ( (direct_start && (get_cur_time() - curSatTime >= satTimeout))
+				|| (!direct_start && (get_cur_time() - last_path_time >= satTimeout))){
 		if(!queue_cur->passed_det) mark_as_det_done(queue_cur);
 		goto havoc_stage;
 	}
@@ -5495,7 +5497,8 @@ static u8 fuzz_one(char** argv) {
   stage_cycles[STAGE_FLIP4] += stage_max;
 
 	//cheong - skip det if it took too much time.
-	if ((get_cur_time() - curSatTime >= satTimeout) && direct_start){
+	if ( (direct_start && (get_cur_time() - curSatTime >= satTimeout))
+				|| (!direct_start && (get_cur_time() - last_path_time >= satTimeout))){
 		if(!queue_cur->passed_det) mark_as_det_done(queue_cur);
 		goto havoc_stage;
 	}
@@ -5592,7 +5595,9 @@ static u8 fuzz_one(char** argv) {
   stage_finds[STAGE_FLIP8]  += new_hit_cnt - orig_hit_cnt;
   stage_cycles[STAGE_FLIP8] += stage_max;
 	
-	if ((get_cur_time() - curSatTime >= satTimeout) && direct_start){
+	//cheong - skip det if it took too much time.
+	if ( (direct_start && (get_cur_time() - curSatTime >= satTimeout))
+				|| (!direct_start && (get_cur_time() - last_path_time >= satTimeout))){
 		if(!queue_cur->passed_det) mark_as_det_done(queue_cur);
 		goto havoc_stage;
 	}
@@ -5636,7 +5641,9 @@ static u8 fuzz_one(char** argv) {
 
   if (len < 4) goto skip_bitflip;
 	
-	if ((get_cur_time() - curSatTime >= satTimeout) && direct_start){
+	//cheong - skip det if it took too much time.
+	if ( (direct_start && (get_cur_time() - curSatTime >= satTimeout))
+				|| (!direct_start && (get_cur_time() - last_path_time >= satTimeout))){
 		if(!queue_cur->passed_det) mark_as_det_done(queue_cur);
 		goto havoc_stage;
 	}
@@ -5675,7 +5682,9 @@ static u8 fuzz_one(char** argv) {
   stage_finds[STAGE_FLIP32]  += new_hit_cnt - orig_hit_cnt;
   stage_cycles[STAGE_FLIP32] += stage_max;
 	
-	if ((get_cur_time() - curSatTime >= satTimeout) && direct_start){
+	//cheong - skip det if it took too much time.
+	if ( (direct_start && (get_cur_time() - curSatTime >= satTimeout))
+				|| (!direct_start && (get_cur_time() - last_path_time >= satTimeout))){
 		if(!queue_cur->passed_det) mark_as_det_done(queue_cur);
 		goto havoc_stage;
 	}
@@ -5752,7 +5761,9 @@ skip_bitflip:
   stage_finds[STAGE_ARITH8]  += new_hit_cnt - orig_hit_cnt;
   stage_cycles[STAGE_ARITH8] += stage_max;
 	
-	if ((get_cur_time() - curSatTime >= satTimeout) && direct_start){
+	//cheong - skip det if it took too much time.
+	if ( (direct_start && (get_cur_time() - curSatTime >= satTimeout))
+				|| (!direct_start && (get_cur_time() - last_path_time >= satTimeout))){
 		if(!queue_cur->passed_det) mark_as_det_done(queue_cur);
 		goto havoc_stage;
 	}
@@ -5851,7 +5862,9 @@ skip_bitflip:
   stage_finds[STAGE_ARITH16]  += new_hit_cnt - orig_hit_cnt;
   stage_cycles[STAGE_ARITH16] += stage_max;
 
-	if ((get_cur_time() - curSatTime >= satTimeout) && direct_start){
+	//cheong - skip det if it took too much time.
+	if ( (direct_start && (get_cur_time() - curSatTime >= satTimeout))
+				|| (!direct_start && (get_cur_time() - last_path_time >= satTimeout))){
 		if(!queue_cur->passed_det) mark_as_det_done(queue_cur);
 		goto havoc_stage;
 	}
@@ -5947,7 +5960,9 @@ skip_bitflip:
   stage_finds[STAGE_ARITH32]  += new_hit_cnt - orig_hit_cnt;
   stage_cycles[STAGE_ARITH32] += stage_max;
 
-	if ((get_cur_time() - curSatTime >= satTimeout) && direct_start){
+	//cheong - skip det if it took too much time.
+	if ( (direct_start && (get_cur_time() - curSatTime >= satTimeout))
+				|| (!direct_start && (get_cur_time() - last_path_time >= satTimeout))){
 		if(!queue_cur->passed_det) mark_as_det_done(queue_cur);
 		goto havoc_stage;
 	}
@@ -6010,7 +6025,9 @@ skip_arith:
 
   /* Setting 16-bit integers, both endians. */
 	
-	if ((get_cur_time() - curSatTime >= satTimeout) && direct_start){
+	//cheong - skip det if it took too much time.
+	if ( (direct_start && (get_cur_time() - curSatTime >= satTimeout))
+				|| (!direct_start && (get_cur_time() - last_path_time >= satTimeout))){
 		if(!queue_cur->passed_det) mark_as_det_done(queue_cur);
 		goto havoc_stage;
 	}
@@ -6083,7 +6100,9 @@ skip_arith:
 
   if (len < 4) goto skip_interest;
 	
-	if ((get_cur_time() - curSatTime >= satTimeout) && direct_start){
+	//cheong - skip det if it took too much time.
+	if ( (direct_start && (get_cur_time() - curSatTime >= satTimeout))
+				|| (!direct_start && (get_cur_time() - last_path_time >= satTimeout))){
 		if(!queue_cur->passed_det) mark_as_det_done(queue_cur);
 		goto havoc_stage;
 	}
@@ -6155,7 +6174,9 @@ skip_arith:
   stage_finds[STAGE_INTEREST32]  += new_hit_cnt - orig_hit_cnt;
   stage_cycles[STAGE_INTEREST32] += stage_max;
 	
-	if ((get_cur_time() - curSatTime >= satTimeout) && direct_start){
+	//cheong - skip det if it took too much time.
+	if ( (direct_start && (get_cur_time() - curSatTime >= satTimeout))
+				|| (!direct_start && (get_cur_time() - last_path_time >= satTimeout))){
 		if(!queue_cur->passed_det) mark_as_det_done(queue_cur);
 		goto havoc_stage;
 	}
@@ -6226,7 +6247,9 @@ skip_interest:
   stage_finds[STAGE_EXTRAS_UO]  += new_hit_cnt - orig_hit_cnt;
   stage_cycles[STAGE_EXTRAS_UO] += stage_max;
 
-	if ((get_cur_time() - curSatTime >= satTimeout) && direct_start){
+	//cheong - skip det if it took too much time.
+	if ( (direct_start && (get_cur_time() - curSatTime >= satTimeout))
+				|| (!direct_start && (get_cur_time() - last_path_time >= satTimeout))){
 		if(!queue_cur->passed_det) mark_as_det_done(queue_cur);
 		goto havoc_stage;
 	}
@@ -6282,7 +6305,9 @@ skip_interest:
 
 skip_user_extras:
 
-	if ((get_cur_time() - curSatTime >= satTimeout) && direct_start){
+	//cheong - skip det if it took too much time.
+	if ( (direct_start && (get_cur_time() - curSatTime >= satTimeout))
+				|| (!direct_start && (get_cur_time() - last_path_time >= satTimeout))){
 		if(!queue_cur->passed_det) mark_as_det_done(queue_cur);
 		goto havoc_stage;
 	}
