@@ -1,6 +1,11 @@
 import sys
 import subprocess
 
+
+if (len(sys.argv) < 4):
+	print("python3 linecov.py list.txt out_dirname out_file.csv")
+	exit()
+ 
 listfn = sys.argv[1]
 dicname = sys.argv[2]
 outname = sys.argv[3]
@@ -29,7 +34,7 @@ def executeTC(tcn):
 		if lc == tcn:
 			break
 		if lc >= prev_linen:
-			ef.write("timeout 0.05 ./grep-gcov " + dicname + line.strip() + " &> /dev/null" + "\n")
+			ef.write("timeout 0.05 ./sed-gcov " + dicname + line.strip() + " &> /dev/null" + "\n")
 		lc = lc + 1
 	prev_linen = tcn
 	f2.close()
@@ -38,7 +43,7 @@ def executeTC(tcn):
 	subprocess.run(cmd)
 	cmd = ["bash", "./execute.sh"]
 	subprocess.run(cmd)
-	cmd = ["gcov" ,"-b", "grep.c"]
+	cmd = ["gcov" ,"-b", "sed-gcov.c"]
 	try:
 		res = subprocess.check_output(cmd)
 	except subprocess.CalledProcessError as e:

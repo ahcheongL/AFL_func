@@ -81,7 +81,7 @@
 /* Lots of globals, but mostly for the status UI and other things where it
    really makes no sense to haul them around as function parameters. */
 
-u64 totalTimeout = 10 * 60 * 60 * 1000;
+u64 totalTimeout = 15 * 60 * 60 * 1000;
 u64 satTimeout;
 u64 curSatTime = 0;
 
@@ -1369,7 +1369,7 @@ static void select_target(){
 		if (i == target_func) continue;
 		struct queue_entry * q2 = queue;
 		while(q2){
-			if (q2->covered_func[i] && q2->covered_func[target_num]) func_num++;
+			if (q2->covered_func[i] && q2->covered_func[target_func]) func_num++;
 			q2 = q2->next;
 		}
 		funclist[i] -> relevance = (double) func_num / target_num;
