@@ -1356,7 +1356,14 @@ static void select_target(){
 	if ( (cur_ms - curSatTime) >= satTimeout){
 		funclist[target_func]->saturated = 1;
 	}
+//reset saturated and increase time.
 	funclist[target_func]-> selected += 1;
+	if (!selected){
+		for (i = 0; i < num_func ; i ++){
+			funclist[i] -> saturated = 0;
+		}
+		satTimeout *= 2;
+	}
 	//compute function relevance to the target function - cheong
 	struct queue_entry * q3 = queue;
 	u32 target_num = 0;
@@ -3526,6 +3533,7 @@ static void write_stats_file(double bitmap_cvg, double stability, double eps) {
              "fuzzer_pid        : %u\n"
              "cycles_done       : %llu\n"
              "execs_done        : %llu\n"
+						 "execs_havoc       : %llu\n"
              "execs_per_sec     : %0.02f\n"
              "paths_total       : %u\n"
              "paths_favored     : %u\n"
@@ -3550,7 +3558,8 @@ static void write_stats_file(double bitmap_cvg, double stability, double eps) {
              "target_mode       : %s%s%s%s%s%s%s\n"
              "command_line      : %s\n",
              start_time / 1000, get_cur_time() / 1000, getpid(),
-             queue_cycle ? (queue_cycle - 1) : 0, total_execs, eps,
+             queue_cycle ? (queue_cycle - 1) : 0, total_execs,
+						 stage_cycles[STAGE_HAVOC] + stage_cycles[STAGE_SPLICE], eps,
              queued_paths, queued_favored, queued_discovered, queued_imported,
              max_depth, current_entry, pending_favored, pending_not_fuzzed,
              queued_variable, stability, bitmap_cvg, unique_crashes,
