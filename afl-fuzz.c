@@ -84,6 +84,8 @@
 u64 totalTimeout = 15 * 60 * 60 * 1000;
 u64 satTimeout;
 u64 curSatTime = 0;
+u32 mutTC = 0;
+u32 mutfuncTC = 0;
 
 EXP_ST u8 *in_dir,                    /* Input directory with test cases  */
           *out_file,                  /* File to fuzz, if any             */
@@ -233,7 +235,7 @@ struct func {
 	double cov;
 	u32 selected;
 	char name[32];
-	u32 maxscore;
+	u32 maxNumOfCoveredNode;
 	u64 exec;
 	char saturated;
 	char recorded;
@@ -283,6 +285,7 @@ struct queue_entry {
   u8* trace_mini;                     /* Trace bytes, if kept             */
   u32 tc_ref;                         /* Trace bytes ref count            */
 	double relscore;
+	u32 numOfCoveredNode;
 	u64 numOfExec;
 	u32 discovered;
 
@@ -293,8 +296,11 @@ struct queue_entry {
 
 static struct queue_entry *queue,     /* Fuzzing queue (linked list)      */
                           *queue_cur, /* Current offset within the queue  */
+													*old_queue_cur,
                           *queue_top, /* Top of the list                  */
-                          *q_prev100; /* Previous 100 marker              */
+                          *q_prev100, /* Previous 100 marker              */
+													*funcqueue, //queue for func-relevance          */
+													*funcqueue_cur;
 
 static struct queue_entry*
   top_rated[MAP_SIZE];                /* Top entries for bitmap bytes     */
@@ -1321,12 +1327,17 @@ static void update_bitmap_score(struct queue_entry* q) {
 
 }
 
+
+EXP_ST u8 common_fuzz_stuff(char ** argv, u8* out_buf, u32 len);
 /*
 	choose one of function as a target, save the index into global variable target_func.
 	calculate relevance of each function with the target function
 	cheong
 */
-static void select_target(){
+static void select_target(char ** argv){
+	stage_short = "Select target";
+	stage_max = 0;
+	stage_name = "Select target";
 	int i,i2;
 	double mincov = 1.0;
 	double prevcov;
@@ -1348,7 +1359,9 @@ static void select_target(){
 		}
 		funclist[i]-> cov = cov;
 	}
+	
 	u64 cur_ms = get_cur_time(); 
+	//reset saturation time
 	if (!selected || target_func != prev_target
 			|| funclist[target_func] -> cov != prevcov){
 		curSatTime = cur_ms;
@@ -1356,30 +1369,105 @@ static void select_target(){
 	if ( (cur_ms - curSatTime) >= satTimeout){
 		funclist[target_func]->saturated = 1;
 	}
-//reset saturated and increase time.
 	funclist[target_func]-> selected += 1;
+
+	//reset saturated and increase time.
 	if (!selected){
 		for (i = 0; i < num_func ; i ++){
 			funclist[i] -> saturated = 0;
 		}
 		satTimeout *= 2;
 	}
-	//compute function relevance to the target function - cheong
-	struct queue_entry * q3 = queue;
-	u32 target_num = 0;
-	while(q3){
-		if(q3->covered_func[target_func]) target_num++;
-		q3 = q3->next;
-	}
-	for (i = 0; i < num_func; i ++){
-		u32 func_num = 0;
-		if (i == target_func) continue;
-		struct queue_entry * q2 = queue;
-		while(q2){
-			if (q2->covered_func[i] && q2->covered_func[target_func]) func_num++;
-			q2 = q2->next;
+	if (prev_target != target_func){
+	//compute function relevance to the target function
+		struct queue_entry * q = queue;
+		u32 target_num = 0;
+		while(q){
+			if(q->covered_func[target_func]) target_num++;
+			q = q->next;
 		}
-		funclist[i] -> relevance = (double) func_num / target_num;
+		for (i = 0; i < num_func; i ++){
+			u32 func_num = 0;
+			if (i == target_func) continue;
+			q = queue;
+			while(q){
+				if (q->covered_func[i] && q->covered_func[target_func]) func_num++;
+				q = q->next;
+			}
+			funclist[i] -> relevance = (double) func_num / target_num;
+		}
+		u32 idx1, idx2;
+		u32 relidx[6] = {0, 0, 0, 0, 0, target_func};
+		double rel[5] = {0.0, 0.0, 0.0, 0.0 , 0.0};
+
+		//get top 5 relevant functions
+		for (idx1 = 0; idx1 < num_func; idx1++){
+			double currel = funclist[idx1]->relevance;
+			for (idx2 = 0; idx2 < 5; idx2++){
+				if (currel > rel[idx2] && strcmp("main", funclist[idx1]->name)){
+					rel[idx2] = currel;
+					relidx[idx2] = idx1;
+					break;
+				}
+			}
+		}
+
+		//Compute score for all testcase
+		q = queue;
+		while (q) {
+		double score;
+		u32 j = MAP_SIZE;
+		u32 fd,len;
+		u32 numOfCoveredNodes = 0;
+		u32 numOfCoveredFuncNodes = 0;
+		u8 pass = 0;
+		u8 * out_buf;
+
+		fd = open(q ->fname, O_RDONLY);
+		if (fd < 0) PFATAL("Unable to open '%s'", q->fname);
+		len = q->len;
+		out_buf = mmap(0, len, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 0);
+		close(fd);
+		
+		//execute the test case;
+		common_fuzz_stuff(argv, out_buf, len);
+		//get number of nodes covered
+		while (j--){
+			if (trace_bits[j]){
+				numOfCoveredNodes++;
+				for (idx1 = 0; idx1 < 6; idx1++){
+					if(pass){ pass = 0; break;}
+					for (idx2 = 0; idx2 < funclist[relidx[idx1]]->numOfNodes; idx2++){
+						if (funclist[relidx[idx1]]->nodes[idx2] == j){
+							numOfCoveredFuncNodes ++;
+							pass = 1;
+							break;
+						}
+					}
+				}
+			}
+		}
+		if (numOfCoveredFuncNodes > funclist[target_func]->maxNumOfCoveredNode){
+			funclist[target_func] -> maxNumOfCoveredNode = numOfCoveredFuncNodes;
+		}
+		q -> numOfCoveredNode = numOfCoveredFuncNodes;
+		q = q-> next;
+		}
+		q = queue;
+		while(q){
+			q -> relscore = (double) q -> numOfCoveredNode
+												/ funclist[target_func] -> maxNumOfCoveredNode;
+			if ( q->relscore >= 0.7){
+				if (funcqueue_cur == NULL){
+					funcqueue = q;
+					funcqueue_cur = q;
+				} else {
+					funcqueue_cur -> next = q;
+					funcqueue_cur = q;
+				}
+			}
+		}
+		funcqueue_cur = funcqueue;
 	}
 }
 
@@ -4076,9 +4164,10 @@ static void show_stats(void) {
 	if (cur_ms - last_rec_ms > 60 * 1000){
 		if (valrecfile != NULL){
 			if (funclist != NULL && funclist[target_func] != NULL){
-				fprintf(valrecfile, "%llu,%u,%s,%u\n",
+				fprintf(valrecfile, "%llu,%u,%s,%lf,%u\n",
 						 (cur_ms - start_time) / 1000 / 60,
-						 queued_paths, funclist[target_func]->name, current_entry);
+						 queued_paths, funclist[target_func]->name,
+						 funclist[target_func]->cov,  current_entry);
 			} else {
 				fprintf(valrecfile, "%llu,%u,NONE,%u\n",
 						 (cur_ms - start_time) / 1000 / 60,
@@ -4370,6 +4459,9 @@ static void show_stats(void) {
 
 	sprintf(tmp, "%s", DTD(cur_ms, curSatTime));
 	SAYF(bV bSTOP "curSatTime : " cRST " %-50s" bSTG bV "\n", tmp); 
+
+	sprintf(tmp, "%u/%u (%0.02f%%)", mutfuncTC, mutTC, (float) mutfuncTC / mutTC);
+	SAYF(bV bSTOP "# of mutated TC (func/all) : " cRST " %-50s" bSTG bV "\n", tmp);
 
   /* Aaaalmost there... hold on! */
 
@@ -4929,52 +5021,8 @@ static u32 calculate_score(struct queue_entry* q) {
 
   }
 
-	//cheong : calculate score based on its function relevance
-		double score;
-		u32 j = MAP_SIZE;
-		u32 numOfCoveredNodes = 0;
-		u32 numOfCoveredFuncNodes = 0;
-		u32 idx1,idx2;
-		u32 relidx[6] = {0, 0, 0, 0, 0, target_func};
-		double rel[5] = {0.0, 0.0, 0.0, 0.0 , 0.0};
-		u8 pass = 0;
-
-		//get top 3 relevant functions
-		for (idx1 = 0; idx1 < num_func; idx1++){
-			double currel = funclist[idx1]->relevance;
-			for (idx2 = 0; idx2 < 5; idx2++){
-				if (currel > rel[idx2] && strcmp("main", funclist[idx1]->name)){
-					rel[idx2] = currel;
-					relidx[idx2] = idx1;
-					break;
-				}
-			}
-		}
-		//get number of nodes covered
-		while (j--){
-			if (trace_bits[j]){
-				numOfCoveredNodes++;
-				for (idx1 = 0; idx1 < 6; idx1++){
-					if(pass){ pass = 0; break;}
-					for (idx2 = 0; idx2 < funclist[relidx[idx1]]->numOfNodes; idx2++){
-						if (funclist[relidx[idx1]]->nodes[idx2] == j){
-							numOfCoveredFuncNodes ++;
-							pass = 1;
-							break;
-						}
-					}
-				}
-			}
-	}
-		if (numOfCoveredFuncNodes > funclist[target_func]->maxscore){
-			funclist[target_func] -> maxscore = numOfCoveredFuncNodes;
-		} 
-		score = (double) numOfCoveredFuncNodes / (funclist[target_func]-> maxscore);
-		if (isnan(score)) score = 0;
-		double relscore = pow(2.0, 10.0*(score - 0.5));
-		q->relscore = relscore;
 	if (direct_start) {
-		perf_score *= relscore;
+		perf_score *= q -> relscore;
 	}
   /* Make sure that we don't go over limit. */
 
@@ -5186,7 +5234,12 @@ static u8 fuzz_one(char** argv) {
 
   u8  a_collect[MAX_AUTO_EXTRA];
   u32 a_len = 0;
-
+	
+	//Select from funcqueue if needed.
+	if (funcqueue_cur != NULL){
+		old_queue_cur = queue_cur;
+		queue_cur = funcqueue_cur;
+	}
 #ifdef IGNORE_FINDS
 
   /* In IGNORE_FINDS mode, skip any entries that weren't in the
@@ -6949,6 +7002,7 @@ abandon_entry:
   ck_free(out_buf);
   ck_free(eff_map);
 
+
   return ret_val;
 
 #undef FLIP_BIT
@@ -7904,7 +7958,7 @@ void record_init(){
 	u8* fn = alloc_printf("%s/minuate_rec.csv", out_dir);
 	valrecfile = fopen(fn, "w");	
 	if (valrecfile == NULL) PFATAL("Unable to open '%s'", fn);
-	fprintf(valrecfile,"min,uniq paths,current target func,current test case\n");
+	fprintf(valrecfile,"min,uniq paths,current target func,cov, current test case\n");
 	ck_free(fn);
 }
 
@@ -8073,7 +8127,7 @@ void check_func_file(void){
 					memset(funclist[func_idx]->nodecov, 0, sizeof(u8) * num_node);
 					funclist[func_idx] -> cov = 0.0;
 					funclist[func_idx] -> selected = 0;
-					funclist[func_idx] -> maxscore = 0;
+					funclist[func_idx] -> maxNumOfCoveredNode = 0;
 					funclist[func_idx] -> exec = 0;
 					funclist[func_idx] -> recorded = 0;
 					funclist[func_idx] -> saturated = 0;
@@ -8570,7 +8624,7 @@ int main(int argc, char** argv) {
   cull_queue();
 
 	//select a function as target with node coverage. - cheong
-	select_target();
+	select_target(use_argv);
 
   show_init_stats();
 
@@ -8596,7 +8650,7 @@ int main(int argc, char** argv) {
     cull_queue();
 		
 		//select a function as target with node coverage. - cheong
-		select_target();
+		select_target(use_argv);
 
     if (!queue_cur) {
 
@@ -8654,12 +8708,19 @@ int main(int argc, char** argv) {
 
     if (stop_soon) break;
 
-    queue_cur = queue_cur->next;
-    current_entry++;
-
+		//back to normal queue;
+		if (funcqueue_cur != NULL){
+			funcqueue_cur = funcqueue_cur -> next;
+			queue_cur = old_queue_cur;
+			mutfuncTC++;
+		} else {
+    	queue_cur = queue_cur->next;
+    	current_entry++;
+		}
+		mutTC ++;
   }
 
-	record_func_cov();
+	//record_func_cov();
 	
   if (queue_cur) show_stats();
   write_bitmap();
