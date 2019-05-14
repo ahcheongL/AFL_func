@@ -287,6 +287,7 @@ struct queue_entry {
 	double relscore;
 	u32 numOfCoveredNode;
 	u64 numOfExec;
+	u32 selected;
 	u32 discovered;
 
   struct queue_entry *next,           /* Next element, if any             */
@@ -831,6 +832,7 @@ static void add_to_queue(u8* fname, u32 len, u8 passed_det) {
 	q->relscore = 0.0;
 	q->numOfExec = 0;
 	q->discovered = 0;
+	q->selected = 0;
 	memset(q->covered_func, 0, sizeof(u8) * num_func);
 
   if (q->depth > max_depth) max_depth = q->depth;
@@ -1458,6 +1460,7 @@ static void select_target(char ** argv){
 			q -> relscore = (double) q -> numOfCoveredNode
 												/ funclist[target_func] -> maxNumOfCoveredNode;
 			if ( q->relscore >= 0.7){
+				q->selected ++;
 				if (funcqueue_cur == NULL){
 					funcqueue = q;
 					funcqueue_cur = q;
@@ -8013,11 +8016,11 @@ static void record_score(){
 	FILE* f2 = fopen(fn, "w");
 	if (f2 == NULL) PFATAL("Can't not open '%s'", fn);
 	fprintf(f2, "target : %s, cov : %lf\n", funclist[target_func]->name, funclist[target_func]->cov);
-	fprintf(f2, "TCid, relscore, num Of Exec., num Of Discovered\n");
+	fprintf(f2, "TCid, relscore, num Of Exec., # of selected, num Of Discovered TC\n");
 	struct queue_entry * q = queue;
 	int id = 0;
 	while(q){
-		fprintf(f2, "%d, %lf, %llu, %u\n", id++, q->relscore, q->numOfExec, q->discovered);
+		fprintf(f2, "%d, %lf, %llu, %u\n", id++, q->relscore, q->numOfExec, q->selected, q->discovered);
 		q = q->next;
 	}
 	ck_free(fn);
