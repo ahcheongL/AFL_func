@@ -34,7 +34,7 @@ def executeTC(tcn):
 		if lc == tcn:
 			break
 		if lc >= prev_linen:
-			ef.write("timeout 0.05 ./sed-gcov " + dicname + line.strip() + " &> /dev/null" + "\n")
+			ef.write("timeout 0.05 ./grep-gcov " + dicname + line.strip() + " &> /dev/null" + "\n")
 		lc = lc + 1
 	prev_linen = tcn
 	f2.close()
@@ -43,7 +43,7 @@ def executeTC(tcn):
 	subprocess.run(cmd)
 	cmd = ["bash", "./execute.sh"]
 	subprocess.run(cmd)
-	cmd = ["gcov" ,"-b", "sed-gcov.c"]
+	cmd = ["gcov" ,"-b", "grep.c"]
 	try:
 		res = subprocess.check_output(cmd)
 	except subprocess.CalledProcessError as e:

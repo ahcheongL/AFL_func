@@ -81,7 +81,7 @@
 /* Lots of globals, but mostly for the status UI and other things where it
    really makes no sense to haul them around as function parameters. */
 
-u64 totalTimeout = 15 * 60 * 60 * 1000;
+u64 totalTimeout = 10 * 60 * 60 * 1000;
 u64 satTimeout;
 u64 curSatTime = 0;
 u32 mutTC = 0;
@@ -291,7 +291,8 @@ struct queue_entry {
 	u32 discovered;
 
   struct queue_entry *next,           /* Next element, if any             */
-                     *next_100;       /* 100 elements ahead               */
+                     *next_100,       /* 100 elements ahead               */
+										 *funcnext;
 
 };
 
@@ -1330,7 +1331,9 @@ static void update_bitmap_score(struct queue_entry* q) {
 }
 
 
-EXP_ST u8 common_fuzz_stuff(char ** argv, u8* out_buf, u32 len);
+static u8 run_target(char ** argv, u32 timeout);
+static void write_to_testcase(void * mem, u32 len);
+
 /*
 	choose one of function as a target, save the index into global variable target_func.
 	calculate relevance of each function with the target function
@@ -1353,7 +1356,7 @@ static void select_target(char ** argv){
 		double cov = ((double) covered_node) / ((double)funclist[i]->numOfNodes);
  		if (mincov > cov 
 				&& funclist[i]->saturated == 0
-				&& covered_node >= 3 && strcmp("main",funclist[i]->name)){
+				&& covered_node >= 5 && strcmp("main",funclist[i]->name)){
 			mincov = cov;
 			prevcov = funclist[i] -> cov;
 			selected = 1;
@@ -1399,13 +1402,13 @@ static void select_target(char ** argv){
 			funclist[i] -> relevance = (double) func_num / target_num;
 		}
 		u32 idx1, idx2;
-		u32 relidx[6] = {0, 0, 0, 0, 0, target_func};
-		double rel[5] = {0.0, 0.0, 0.0, 0.0 , 0.0};
+		u32 relidx[5] = {0, 0, 0, 0, target_func};
+		double rel[4] = {0.0, 0.0, 0.0 , 0.0};
 
 		//get top 5 relevant functions
 		for (idx1 = 0; idx1 < num_func; idx1++){
 			double currel = funclist[idx1]->relevance;
-			for (idx2 = 0; idx2 < 5; idx2++){
+			for (idx2 = 0; idx2 < 4; idx2++){
 				if (currel > rel[idx2] && strcmp("main", funclist[idx1]->name)){
 					rel[idx2] = currel;
 					relidx[idx2] = idx1;
@@ -1417,58 +1420,66 @@ static void select_target(char ** argv){
 		//Compute score for all testcase
 		q = queue;
 		while (q) {
-		double score;
-		u32 j = MAP_SIZE;
-		u32 fd,len;
-		u32 numOfCoveredNodes = 0;
-		u32 numOfCoveredFuncNodes = 0;
-		u8 pass = 0;
-		u8 * out_buf;
+			double score;
+			u32 j = MAP_SIZE;
+			u32 fd,len;
+			u32 numOfCoveredNodes = 0;
+			u32 numOfCoveredFuncNodes = 0;
+			u8 pass = 0;
+			u8 * out_buf;
 
-		fd = open(q ->fname, O_RDONLY);
-		if (fd < 0) PFATAL("Unable to open '%s'", q->fname);
-		len = q->len;
-		out_buf = mmap(0, len, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 0);
-		close(fd);
+			fd = open(q ->fname, O_RDONLY);
+			if (fd < 0) PFATAL("Unable to open '%s'", q->fname);
+			len = q->len;
+			out_buf = mmap(0, len, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 0);
+			close(fd);
 		
-		//execute the test case;
-		common_fuzz_stuff(argv, out_buf, len);
-		//get number of nodes covered
-		while (j--){
-			if (trace_bits[j]){
-				numOfCoveredNodes++;
-				for (idx1 = 0; idx1 < 6; idx1++){
-					if(pass){ pass = 0; break;}
-					for (idx2 = 0; idx2 < funclist[relidx[idx1]]->numOfNodes; idx2++){
-						if (funclist[relidx[idx1]]->nodes[idx2] == j){
-							numOfCoveredFuncNodes ++;
-							pass = 1;
-							break;
+			//execute the test case;
+			if (out_buf != NULL){
+				write_to_testcase(out_buf, len);
+				run_target(argv, exec_tmout);
+			}
+			munmap(out_buf,len);
+			//get number of nodes covered
+			while (j--){
+				if (trace_bits[j]){
+					numOfCoveredNodes++;
+					for (idx1 = 0; idx1 < 6; idx1++){
+						if(pass){ pass = 0; break;}
+						for (idx2 = 0; idx2 < funclist[relidx[idx1]]->numOfNodes; idx2++){
+							if (funclist[relidx[idx1]]->nodes[idx2] == j){
+								numOfCoveredFuncNodes ++;
+								pass = 1;
+								break;
+							}
 						}
 					}
 				}
 			}
-		}
-		if (numOfCoveredFuncNodes > funclist[target_func]->maxNumOfCoveredNode){
-			funclist[target_func] -> maxNumOfCoveredNode = numOfCoveredFuncNodes;
-		}
-		q -> numOfCoveredNode = numOfCoveredFuncNodes;
-		q = q-> next;
+			if (numOfCoveredFuncNodes > funclist[target_func]->maxNumOfCoveredNode){
+				funclist[target_func] -> maxNumOfCoveredNode = numOfCoveredFuncNodes;
+			}
+			q -> numOfCoveredNode = numOfCoveredFuncNodes;
+			q = q-> next;
 		}
 		q = queue;
+		funcqueue_cur = NULL;
 		while(q){
 			q -> relscore = (double) q -> numOfCoveredNode
 												/ funclist[target_func] -> maxNumOfCoveredNode;
-			if ( q->relscore >= 0.7){
+			if ( q->relscore > 0.3 && direct_start){
 				q->selected ++;
 				if (funcqueue_cur == NULL){
 					funcqueue = q;
 					funcqueue_cur = q;
+					funcqueue_cur -> funcnext = NULL;
 				} else {
-					funcqueue_cur -> next = q;
+					funcqueue_cur -> funcnext = q;
 					funcqueue_cur = q;
+					funcqueue_cur -> funcnext = NULL;
 				}
 			}
+			q = q->next;
 		}
 		funcqueue_cur = funcqueue;
 	}
@@ -3647,7 +3658,8 @@ static void write_stats_file(double bitmap_cvg, double stability, double eps) {
              "afl_banner        : %s\n"
              "afl_version       : " VERSION "\n"
              "target_mode       : %s%s%s%s%s%s%s\n"
-             "command_line      : %s\n",
+             "command_line      : %s\n"
+						 "# of mutated func TC : %u / %u\n",
              start_time / 1000, get_cur_time() / 1000, getpid(),
              queue_cycle ? (queue_cycle - 1) : 0, total_execs,
 						 stage_cycles[STAGE_HAVOC] + stage_cycles[STAGE_SPLICE], eps,
@@ -3662,7 +3674,7 @@ static void write_stats_file(double bitmap_cvg, double stability, double eps) {
              persistent_mode ? "persistent " : "", deferred_mode ? "deferred " : "",
              (qemu_mode || dumb_mode || no_forkserver || crash_mode ||
               persistent_mode || deferred_mode) ? "" : "default",
-             orig_cmdline);
+             orig_cmdline, mutfuncTC, mutTC);
 
 	 fclose(f);
 
@@ -4463,7 +4475,7 @@ static void show_stats(void) {
 	sprintf(tmp, "%s", DTD(cur_ms, curSatTime));
 	SAYF(bV bSTOP "curSatTime : " cRST " %-50s" bSTG bV "\n", tmp); 
 
-	sprintf(tmp, "%u/%u (%0.02f%%)", mutfuncTC, mutTC, (float) mutfuncTC / mutTC);
+	sprintf(tmp, "%u/%u (%0.02f%%)", mutfuncTC, mutTC, (float) mutfuncTC / mutTC*100);
 	SAYF(bV bSTOP "# of mutated TC (func/all) : " cRST " %-50s" bSTG bV "\n", tmp);
 
   /* Aaaalmost there... hold on! */
@@ -5025,7 +5037,7 @@ static u32 calculate_score(struct queue_entry* q) {
   }
 
 	if (direct_start) {
-		perf_score *= q -> relscore;
+		//perf_score *= pow(2.0, 10.0 * (q -> relscore - 0.4));
 	}
   /* Make sure that we don't go over limit. */
 
@@ -5365,8 +5377,10 @@ static u8 fuzz_one(char** argv) {
    * PERFORMANCE SCORE *
    *********************/
 
-	//set trace_bits to the execution of current test case before calculating score.
-	common_fuzz_stuff(argv, out_buf, len);
+
+	if (funcqueue_cur != NULL) mutfuncTC++;
+	mutTC ++;
+
   orig_perf = perf_score = calculate_score(queue_cur);
 
   /* Skip right away if -d is given, if we have done deterministic fuzzing on
@@ -5393,6 +5407,7 @@ static u8 fuzz_one(char** argv) {
     u32 _bf = (_b); \
     _arf[(_bf) >> 3] ^= (128 >> ((_bf) & 7)); \
   } while (0)
+
 
   /* Single walking bit. */
 
@@ -5490,12 +5505,6 @@ static u8 fuzz_one(char** argv) {
   stage_finds[STAGE_FLIP1]  += new_hit_cnt - orig_hit_cnt;
   stage_cycles[STAGE_FLIP1] += stage_max;
 
-	//cheong - skip det if it took too much time.
-	if ( (direct_start && (get_cur_time() - curSatTime >= satTimeout))
-				|| (!direct_start && (get_cur_time() - last_path_time >= satTimeout))){
-		if(!queue_cur->passed_det) mark_as_det_done(queue_cur);
-		goto havoc_stage;
-	}
 
   /* Two walking bits. */
 
@@ -5524,12 +5533,6 @@ static u8 fuzz_one(char** argv) {
   stage_finds[STAGE_FLIP2]  += new_hit_cnt - orig_hit_cnt;
   stage_cycles[STAGE_FLIP2] += stage_max;
 
-	//cheong - skip det if it took too much time.
-	if ( (direct_start && (get_cur_time() - curSatTime >= satTimeout))
-				|| (!direct_start && (get_cur_time() - last_path_time >= satTimeout))){
-		if(!queue_cur->passed_det) mark_as_det_done(queue_cur);
-		goto havoc_stage;
-	}
   /* Four walking bits. */
 
   stage_name  = "bitflip 4/1";
@@ -5560,13 +5563,6 @@ static u8 fuzz_one(char** argv) {
 
   stage_finds[STAGE_FLIP4]  += new_hit_cnt - orig_hit_cnt;
   stage_cycles[STAGE_FLIP4] += stage_max;
-
-	//cheong - skip det if it took too much time.
-	if ( (direct_start && (get_cur_time() - curSatTime >= satTimeout))
-				|| (!direct_start && (get_cur_time() - last_path_time >= satTimeout))){
-		if(!queue_cur->passed_det) mark_as_det_done(queue_cur);
-		goto havoc_stage;
-	}
 
   /* Effector map setup. These macros calculate:
 
@@ -5660,13 +5656,6 @@ static u8 fuzz_one(char** argv) {
   stage_finds[STAGE_FLIP8]  += new_hit_cnt - orig_hit_cnt;
   stage_cycles[STAGE_FLIP8] += stage_max;
 	
-	//cheong - skip det if it took too much time.
-	if ( (direct_start && (get_cur_time() - curSatTime >= satTimeout))
-				|| (!direct_start && (get_cur_time() - last_path_time >= satTimeout))){
-		if(!queue_cur->passed_det) mark_as_det_done(queue_cur);
-		goto havoc_stage;
-	}
-
   /* Two walking bytes. */
 
   if (len < 2) goto skip_bitflip;
@@ -5706,13 +5695,6 @@ static u8 fuzz_one(char** argv) {
 
   if (len < 4) goto skip_bitflip;
 	
-	//cheong - skip det if it took too much time.
-	if ( (direct_start && (get_cur_time() - curSatTime >= satTimeout))
-				|| (!direct_start && (get_cur_time() - last_path_time >= satTimeout))){
-		if(!queue_cur->passed_det) mark_as_det_done(queue_cur);
-		goto havoc_stage;
-	}
-
   /* Four walking bytes. */
 
   stage_name  = "bitflip 32/8";
@@ -5747,13 +5729,6 @@ static u8 fuzz_one(char** argv) {
   stage_finds[STAGE_FLIP32]  += new_hit_cnt - orig_hit_cnt;
   stage_cycles[STAGE_FLIP32] += stage_max;
 	
-	//cheong - skip det if it took too much time.
-	if ( (direct_start && (get_cur_time() - curSatTime >= satTimeout))
-				|| (!direct_start && (get_cur_time() - last_path_time >= satTimeout))){
-		if(!queue_cur->passed_det) mark_as_det_done(queue_cur);
-		goto havoc_stage;
-	}
-
 skip_bitflip:
 
   if (no_arith) goto skip_arith;
@@ -5826,12 +5801,6 @@ skip_bitflip:
   stage_finds[STAGE_ARITH8]  += new_hit_cnt - orig_hit_cnt;
   stage_cycles[STAGE_ARITH8] += stage_max;
 	
-	//cheong - skip det if it took too much time.
-	if ( (direct_start && (get_cur_time() - curSatTime >= satTimeout))
-				|| (!direct_start && (get_cur_time() - last_path_time >= satTimeout))){
-		if(!queue_cur->passed_det) mark_as_det_done(queue_cur);
-		goto havoc_stage;
-	}
 
   /* 16-bit arithmetics, both endians. */
 
@@ -5927,12 +5896,6 @@ skip_bitflip:
   stage_finds[STAGE_ARITH16]  += new_hit_cnt - orig_hit_cnt;
   stage_cycles[STAGE_ARITH16] += stage_max;
 
-	//cheong - skip det if it took too much time.
-	if ( (direct_start && (get_cur_time() - curSatTime >= satTimeout))
-				|| (!direct_start && (get_cur_time() - last_path_time >= satTimeout))){
-		if(!queue_cur->passed_det) mark_as_det_done(queue_cur);
-		goto havoc_stage;
-	}
   /* 32-bit arithmetics, both endians. */
 
   if (len < 4) goto skip_arith;
@@ -6025,12 +5988,6 @@ skip_bitflip:
   stage_finds[STAGE_ARITH32]  += new_hit_cnt - orig_hit_cnt;
   stage_cycles[STAGE_ARITH32] += stage_max;
 
-	//cheong - skip det if it took too much time.
-	if ( (direct_start && (get_cur_time() - curSatTime >= satTimeout))
-				|| (!direct_start && (get_cur_time() - last_path_time >= satTimeout))){
-		if(!queue_cur->passed_det) mark_as_det_done(queue_cur);
-		goto havoc_stage;
-	}
 skip_arith:
 
   /**********************
@@ -6090,13 +6047,6 @@ skip_arith:
 
   /* Setting 16-bit integers, both endians. */
 	
-	//cheong - skip det if it took too much time.
-	if ( (direct_start && (get_cur_time() - curSatTime >= satTimeout))
-				|| (!direct_start && (get_cur_time() - last_path_time >= satTimeout))){
-		if(!queue_cur->passed_det) mark_as_det_done(queue_cur);
-		goto havoc_stage;
-	}
-
   if (no_arith || len < 2) goto skip_interest;
 
   stage_name  = "interest 16/8";
@@ -6165,13 +6115,6 @@ skip_arith:
 
   if (len < 4) goto skip_interest;
 	
-	//cheong - skip det if it took too much time.
-	if ( (direct_start && (get_cur_time() - curSatTime >= satTimeout))
-				|| (!direct_start && (get_cur_time() - last_path_time >= satTimeout))){
-		if(!queue_cur->passed_det) mark_as_det_done(queue_cur);
-		goto havoc_stage;
-	}
-
   /* Setting 32-bit integers, both endians. */
 
   stage_name  = "interest 32/8";
@@ -6239,13 +6182,6 @@ skip_arith:
   stage_finds[STAGE_INTEREST32]  += new_hit_cnt - orig_hit_cnt;
   stage_cycles[STAGE_INTEREST32] += stage_max;
 	
-	//cheong - skip det if it took too much time.
-	if ( (direct_start && (get_cur_time() - curSatTime >= satTimeout))
-				|| (!direct_start && (get_cur_time() - last_path_time >= satTimeout))){
-		if(!queue_cur->passed_det) mark_as_det_done(queue_cur);
-		goto havoc_stage;
-	}
-
 skip_interest:
 
   /********************
@@ -6312,13 +6248,6 @@ skip_interest:
   stage_finds[STAGE_EXTRAS_UO]  += new_hit_cnt - orig_hit_cnt;
   stage_cycles[STAGE_EXTRAS_UO] += stage_max;
 
-	//cheong - skip det if it took too much time.
-	if ( (direct_start && (get_cur_time() - curSatTime >= satTimeout))
-				|| (!direct_start && (get_cur_time() - last_path_time >= satTimeout))){
-		if(!queue_cur->passed_det) mark_as_det_done(queue_cur);
-		goto havoc_stage;
-	}
-
   /* Insertion of user-supplied extras. */
 
   stage_name  = "user extras (insert)";
@@ -6369,13 +6298,6 @@ skip_interest:
   stage_cycles[STAGE_EXTRAS_UI] += stage_max;
 
 skip_user_extras:
-
-	//cheong - skip det if it took too much time.
-	if ( (direct_start && (get_cur_time() - curSatTime >= satTimeout))
-				|| (!direct_start && (get_cur_time() - last_path_time >= satTimeout))){
-		if(!queue_cur->passed_det) mark_as_det_done(queue_cur);
-		goto havoc_stage;
-	}
 
   if (!a_extras_cnt) goto skip_extras;
 
@@ -8318,7 +8240,8 @@ void handler(int sig){
 	void * array[10];
 	size_t size;
 	size = backtrace(array,10);
-  fprintf(stderr, "Error : signal %d\n", sig);
+  fprintf(stderr, "Segmentation Fault\n");
+	fprintf(stderr, "stage : %s\n", stage_name);
   backtrace_symbols_fd(array,size, STDERR_FILENO);
 	exit(1);
 
@@ -8339,7 +8262,7 @@ int main(int argc, char** argv) {
 	signal(SIGSEGV, handler);
   struct timeval tv;
   struct timezone tz;
-	satTimeout = totalTimeout * 1 / 100;
+	satTimeout = totalTimeout * 5 / 1000;
 
   SAYF(cCYA "afl-fuzz " cBRI VERSION cRST " by <lcamtuf@google.com>\n");
 
@@ -8626,6 +8549,7 @@ int main(int argc, char** argv) {
 
   cull_queue();
 
+	target_func = -1;
 	//select a function as target with node coverage. - cheong
 	select_target(use_argv);
 
@@ -8713,14 +8637,12 @@ int main(int argc, char** argv) {
 
 		//back to normal queue;
 		if (funcqueue_cur != NULL){
-			funcqueue_cur = funcqueue_cur -> next;
+			funcqueue_cur = funcqueue_cur -> funcnext;
 			queue_cur = old_queue_cur;
-			mutfuncTC++;
 		} else {
     	queue_cur = queue_cur->next;
     	current_entry++;
 		}
-		mutTC ++;
   }
 
 	//record_func_cov();
