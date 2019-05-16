@@ -174,6 +174,8 @@ EXP_ST u32 queued_paths,              /* Total number of queued testcases */
            useless_at_start,          /* Number of useless starting paths */
            var_byte_count,            /* Bitmap bytes with var behavior   */
            current_entry,             /* Current queue entry ID           */
+					 current_func_entry,
+					 func_entry_size,
            havoc_div = 1;             /* Cycle count divisor for havoc    */
 
 EXP_ST u64 total_crashes,             /* Total number of crashes          */
@@ -238,7 +240,6 @@ struct func {
 	u32 maxNumOfCoveredNode;
 	u64 exec;
 	char saturated;
-	char recorded;
 };
 
 char outdir_set = 0;
@@ -302,6 +303,7 @@ static struct queue_entry *queue,     /* Fuzzing queue (linked list)      */
                           *queue_top, /* Top of the list                  */
                           *q_prev100, /* Previous 100 marker              */
 													*funcqueue, //queue for func-relevance          */
+													*funcqueue_top,
 													*funcqueue_cur;
 
 static struct queue_entry*
@@ -856,6 +858,12 @@ static void add_to_queue(u8* fname, u32 len, u8 passed_det) {
     q_prev100 = q;
 
   }
+	
+	if (funcqueue_top != NULL){
+		func_entry_size ++;
+		funcqueue_top -> funcnext = q;
+		funcqueue_top = q;
+	}
 
   last_path_time = get_cur_time();
 }
@@ -1462,13 +1470,17 @@ static void select_target(char ** argv){
 			q -> numOfCoveredNode = numOfCoveredFuncNodes;
 			q = q-> next;
 		}
-		q = queue;
+		q = queue_cur;
 		funcqueue_cur = NULL;
+		funcqueue_top = NULL;
+		func_entry_size = 0;
+		current_func_entry = 0;
 		while(q){
 			q -> relscore = (double) q -> numOfCoveredNode
 												/ funclist[target_func] -> maxNumOfCoveredNode;
 			if ( q->relscore > 0.3 && direct_start){
 				q->selected ++;
+				func_entry_size ++;
 				if (funcqueue_cur == NULL){
 					funcqueue = q;
 					funcqueue_cur = q;
@@ -1481,6 +1493,7 @@ static void select_target(char ** argv){
 			}
 			q = q->next;
 		}
+		funcqueue_top = funcqueue_cur;
 		funcqueue_cur = funcqueue;
 	}
 }
@@ -4371,10 +4384,14 @@ static void show_stats(void) {
      together, but then cram them into a fixed-width field - so we need to
      put them in a temporary buffer first. */
 
-  sprintf(tmp, "%s%s (%0.02f%%)", DI(current_entry),
+	if (funcqueue_cur != NULL){
+		sprintf(tmp, "func - %u (%0.02f%%)", current_func_entry,
+          ((double)current_func_entry * 100) / func_entry_size);
+	} else {
+  	sprintf(tmp, "%s%s (%0.02f%%)", DI(current_entry),
           queue_cur->favored ? "" : "*",
           ((double)current_entry * 100) / queued_paths);
-
+	}
   SAYF(bV bSTOP "  now processing : " cRST "%-17s " bSTG bV bSTOP, tmp);
 
   sprintf(tmp, "%0.02f%% / %0.02f%%", ((double)queue_cur->bitmap_size) * 
@@ -5254,6 +5271,7 @@ static u8 fuzz_one(char** argv) {
 	if (funcqueue_cur != NULL){
 		old_queue_cur = queue_cur;
 		queue_cur = funcqueue_cur;
+		current_func_entry ++;
 	}
 #ifdef IGNORE_FINDS
 
@@ -7468,10 +7486,6 @@ EXP_ST void setup_dirs_fds(void) {
 	if (mkdir(tmp, 0700)) PFATAL("Unable to create '%s'", tmp);
 	ck_free(tmp);
 
-	tmp = alloc_printf("%s/cov/", out_dir);
-	if (mkdir(tmp, 0700)) PFATAL("Unable to create '%s'", tmp);
-	ck_free(tmp);
-	
 	tmp = alloc_printf("%s/relevance/", out_dir);
 	if (mkdir(tmp, 0700)) PFATAL("Unable to create '%s'", tmp);
 	ck_free(tmp);
@@ -7918,15 +7932,19 @@ void record_func_cov(){
 
 
 static void record_cov(u64 cur_min){
-	u8 * fn = alloc_printf("%s/cov/cov-%s.txt", out_dir, funclist[target_func]->name);
+	u8 * fn = alloc_printf("%s/function_cov.txt", out_dir);
 	FILE* f2 = fopen(fn, "a");
 	if (f2 == NULL) PFATAL("Can't not open '%s'", fn);
-	if (!funclist[target_func]->recorded){
-		fprintf(f2, "min,selected,num Of exec,cov\n");
-		funclist[target_func]->recorded ++;
+	static recorded = 0;
+	if (!recorded){
+		recorded = 1;
+		fprintf(f2, "min,func_name,cov,selected,num Of exec\n");
 	}
-	fprintf(f2, "%llu,%u,%llu,%lf\n",cur_min, funclist[target_func]->selected,
-							funclist[target_func]->exec, funclist[target_func]->cov);
+	int i = 0;
+	for ( i = 0; i < num_func; i ++){
+		fprintf(f2, "%llu,%s,%lf,%u,%llu\n",cur_min, funclist[i]->name, funclist[i]->cov,
+							funclist[i]->selected, funclist[i]->exec);
+	}
 	ck_free(fn);
 	fclose(f2);
 }
@@ -8054,7 +8072,6 @@ void check_func_file(void){
 					funclist[func_idx] -> selected = 0;
 					funclist[func_idx] -> maxNumOfCoveredNode = 0;
 					funclist[func_idx] -> exec = 0;
-					funclist[func_idx] -> recorded = 0;
 					funclist[func_idx] -> saturated = 0;
 					func_idx++;
 					func_line--;
