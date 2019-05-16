@@ -1356,7 +1356,7 @@ static void select_target(char ** argv){
 		double cov = ((double) covered_node) / ((double)funclist[i]->numOfNodes);
  		if (mincov > cov 
 				&& funclist[i]->saturated == 0
-				&& covered_node >= 5 && strcmp("main",funclist[i]->name)){
+				&& cov >= 0.1 && strcmp("main",funclist[i]->name)){
 			mincov = cov;
 			prevcov = funclist[i] -> cov;
 			selected = 1;

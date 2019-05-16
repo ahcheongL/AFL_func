@@ -13,3 +13,4 @@ afl-as
 afl-gotcpu
 afl-showmap
 afl-tmin
+afl-clang-fast++

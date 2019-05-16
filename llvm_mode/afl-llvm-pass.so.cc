@@ -110,6 +110,9 @@ bool AFLCoverage::runOnModule(Module &M) {
       M, Int32Ty, false, GlobalValue::ExternalLinkage, 0, "__afl_prev_loc",
       0, GlobalVariable::GeneralDynamicTLSModel, 0, false);
 
+	char * nodebitmap = (char *) malloc (MAP_SIZE / 8);
+	memset(nodebitmap, 0, MAP_SIZE / 8);
+
   /* Instrument all the things! */
 
   int inst_blocks = 0;
@@ -125,14 +128,6 @@ bool AFLCoverage::runOnModule(Module &M) {
 	}
 	unsigned int num_func = func_idx;
 	func_idx = 0;
-
-	//make FInfo.txt for each text
-	//std::ofstream funcinfos;
-	//std::string filename = M.getSourceFileName();
-	//filename = filename.substr(filename.rfind('/')+1);
-	//char tmpstr[255];
-	//snprintf(tmpstr,255, "FInfo.%s.txt", filename.c_str());
-	//funcinfos.open(tmpstr, std::ofstream::out | std::ofstream::trunc);
 
 	//append it all in one file.
 	char tmpstr[24];
@@ -170,6 +165,15 @@ bool AFLCoverage::runOnModule(Module &M) {
       /* Make up cur_loc */
 
       unsigned int cur_loc = AFL_R(MAP_SIZE);
+
+			while (1){
+				if (nodebitmap[cur_loc / 8] & (1 << (cur_loc % 8))){
+					cur_loc = AFL_R(MAP_SIZE);
+				} else {
+					break;
+				}
+			}
+			nodebitmap[cur_loc /8] |= 1 << (cur_loc % 8);
 			blocklist.push_back(cur_loc);
 
       ConstantInt *CurLoc = ConstantInt::get(Int32Ty, cur_loc);
