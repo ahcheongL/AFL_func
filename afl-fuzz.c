@@ -83,6 +83,7 @@
 
 u64 totalTimeout = 10 * 60 * 60 * 1000;
 u64 satTimeout;
+u64 detSatTimeout;
 u64 curSatTime = 0;
 u32 mutTC = 0;
 u32 mutfuncTC = 0;
@@ -293,7 +294,8 @@ struct queue_entry {
 
   struct queue_entry *next,           /* Next element, if any             */
                      *next_100,       /* 100 elements ahead               */
-										 *funcnext;
+										 *funcnext,
+										 *funcprev;
 
 };
 
@@ -859,12 +861,6 @@ static void add_to_queue(u8* fname, u32 len, u8 passed_det) {
 
   }
 	
-	if (funcqueue_top != NULL){
-		func_entry_size ++;
-		funcqueue_top -> funcnext = q;
-		funcqueue_top = q;
-	}
-
   last_path_time = get_cur_time();
 }
 
@@ -1353,7 +1349,7 @@ static void select_target(char ** argv){
 	stage_name = "Select target";
 	int i,i2;
 	double mincov = 1.0;
-	double prevcov;
+	double prevcov = 0.0;
 	int selected = 0;
 	u32 prev_target = target_func;
 	for (i = 0; i < num_func; i++){
@@ -1375,21 +1371,19 @@ static void select_target(char ** argv){
 	
 	u64 cur_ms = get_cur_time(); 
 	//reset saturation time
-	if (!selected || target_func != prev_target
+	if ((selected && target_func != prev_target)
 			|| funclist[target_func] -> cov != prevcov){
 		curSatTime = cur_ms;
 	}
-	if ( (cur_ms - curSatTime) >= satTimeout){
+	if ((cur_ms - curSatTime) >= satTimeout){
 		funclist[target_func]->saturated = 1;
 	}
 	funclist[target_func]-> selected += 1;
-
 	//reset saturated and increase time.
 	if (!selected){
 		for (i = 0; i < num_func ; i ++){
 			funclist[i] -> saturated = 0;
 		}
-		satTimeout *= 2;
 	}
 	if (prev_target != target_func){
 	//compute function relevance to the target function
@@ -1428,7 +1422,6 @@ static void select_target(char ** argv){
 		//Compute score for all testcase
 		q = queue;
 		while (q) {
-			double score;
 			u32 j = MAP_SIZE;
 			u32 fd,len;
 			u32 numOfCoveredNodes = 0;
@@ -1478,22 +1471,46 @@ static void select_target(char ** argv){
 		while(q){
 			q -> relscore = (double) q -> numOfCoveredNode
 												/ funclist[target_func] -> maxNumOfCoveredNode;
-			if ( q->relscore > 0.3 && direct_start){
+			if ( q->relscore > 0.6 && direct_start){
 				q->selected ++;
 				func_entry_size ++;
 				if (funcqueue_cur == NULL){
 					funcqueue = q;
 					funcqueue_cur = q;
 					funcqueue_cur -> funcnext = NULL;
+					funcqueue_cur -> funcprev = NULL;
+					funcqueue_top = q;
 				} else {
-					funcqueue_cur -> funcnext = q;
-					funcqueue_cur = q;
-					funcqueue_cur -> funcnext = NULL;
+					struct queue_entry *q_tmp = funcqueue;
+					char inserted = 0;
+					while(q_tmp != funcqueue_top){
+						if (q_tmp->relscore <= q->relscore){
+							if (q_tmp == funcqueue){
+								funcqueue = q;
+								q -> funcnext = q_tmp;
+								q -> funcprev = NULL;
+								q_tmp -> funcprev = q;
+							} else {
+								q_tmp->funcprev->funcnext = q;
+								q -> funcprev = q_tmp -> funcprev;
+								q -> funcnext = q_tmp;
+								q_tmp -> funcprev = q;
+							}
+							inserted = 1;
+							break;
+						}
+						q_tmp = q_tmp -> funcnext;
+					}
+					if (!inserted){
+						funcqueue_top -> funcnext = q;
+						q-> funcprev = funcqueue_top;
+						funcqueue_top = q;
+						q->funcnext = NULL;
+					}
 				}
 			}
 			q = q->next;
 		}
-		funcqueue_top = funcqueue_cur;
 		funcqueue_cur = funcqueue;
 	}
 }
@@ -4489,8 +4506,10 @@ static void show_stats(void) {
 	sprintf(tmp, "%lf", queue_cur ->relscore );
 	SAYF(bV bSTOP "  current test case score : " cRST "%-50s" bSTG bV "\n", tmp);
 
-	sprintf(tmp, "%s", DTD(cur_ms, curSatTime));
-	SAYF(bV bSTOP "curSatTime : " cRST " %-50s" bSTG bV "\n", tmp); 
+	if (direct_start){
+		sprintf(tmp, "%s", DTD(cur_ms, curSatTime));
+		SAYF(bV bSTOP "curSatTime : " cRST " %-50s" bSTG bV "\n", tmp); 
+	}
 
 	sprintf(tmp, "%u/%u (%0.02f%%)", mutfuncTC, mutTC, (float) mutfuncTC / mutTC*100);
 	SAYF(bV bSTOP "# of mutated TC (func/all) : " cRST " %-50s" bSTG bV "\n", tmp);
@@ -5054,7 +5073,9 @@ static u32 calculate_score(struct queue_entry* q) {
   }
 
 	if (direct_start) {
-		//perf_score *= pow(2.0, 10.0 * (q -> relscore - 0.4));
+		double score1 = (q -> relscore - 0.5) * (1.0 - funclist[target_func] -> cov); 
+		double powscore = pow(2.0, 10.0 * score1);
+		perf_score *= (powscore >= 1.0) ? powscore : 1.0;
 	}
   /* Make sure that we don't go over limit. */
 
@@ -5271,7 +5292,6 @@ static u8 fuzz_one(char** argv) {
 	if (funcqueue_cur != NULL){
 		old_queue_cur = queue_cur;
 		queue_cur = funcqueue_cur;
-		current_func_entry ++;
 	}
 #ifdef IGNORE_FINDS
 
@@ -5523,6 +5543,10 @@ static u8 fuzz_one(char** argv) {
   stage_finds[STAGE_FLIP1]  += new_hit_cnt - orig_hit_cnt;
   stage_cycles[STAGE_FLIP1] += stage_max;
 
+	if ((!direct_start && ((get_cur_time()- last_path_time) >= detSatTimeout))
+				|| (direct_start && ((get_cur_time() - curSatTime) >= satTimeout))){
+		goto havoc_stage;
+	}
 
   /* Two walking bits. */
 
@@ -5550,6 +5574,11 @@ static u8 fuzz_one(char** argv) {
 
   stage_finds[STAGE_FLIP2]  += new_hit_cnt - orig_hit_cnt;
   stage_cycles[STAGE_FLIP2] += stage_max;
+
+	if ((!direct_start && ((get_cur_time()- last_path_time) >= detSatTimeout))
+				|| (direct_start && ((get_cur_time() - curSatTime) >= satTimeout))){
+		goto havoc_stage;
+	}
 
   /* Four walking bits. */
 
@@ -5581,6 +5610,11 @@ static u8 fuzz_one(char** argv) {
 
   stage_finds[STAGE_FLIP4]  += new_hit_cnt - orig_hit_cnt;
   stage_cycles[STAGE_FLIP4] += stage_max;
+
+	if ((!direct_start && ((get_cur_time()- last_path_time) >= detSatTimeout))
+				|| (direct_start && ((get_cur_time() - curSatTime) >= satTimeout))){
+		goto havoc_stage;
+	}
 
   /* Effector map setup. These macros calculate:
 
@@ -5673,6 +5707,11 @@ static u8 fuzz_one(char** argv) {
 
   stage_finds[STAGE_FLIP8]  += new_hit_cnt - orig_hit_cnt;
   stage_cycles[STAGE_FLIP8] += stage_max;
+
+	if ((!direct_start && ((get_cur_time()- last_path_time) >= detSatTimeout))
+				|| (direct_start && ((get_cur_time() - curSatTime) >= satTimeout))){
+		goto havoc_stage;
+	}
 	
   /* Two walking bytes. */
 
@@ -5711,6 +5750,11 @@ static u8 fuzz_one(char** argv) {
   stage_finds[STAGE_FLIP16]  += new_hit_cnt - orig_hit_cnt;
   stage_cycles[STAGE_FLIP16] += stage_max;
 
+	if ((!direct_start && ((get_cur_time()- last_path_time) >= detSatTimeout))
+				|| (direct_start && ((get_cur_time() - curSatTime) >= satTimeout))){
+		goto havoc_stage;
+	}
+
   if (len < 4) goto skip_bitflip;
 	
   /* Four walking bytes. */
@@ -5746,6 +5790,11 @@ static u8 fuzz_one(char** argv) {
 
   stage_finds[STAGE_FLIP32]  += new_hit_cnt - orig_hit_cnt;
   stage_cycles[STAGE_FLIP32] += stage_max;
+
+	if ((!direct_start && ((get_cur_time()- last_path_time) >= detSatTimeout))
+				|| (direct_start && ((get_cur_time() - curSatTime) >= satTimeout))){
+		goto havoc_stage;
+	}
 	
 skip_bitflip:
 
@@ -5818,6 +5867,11 @@ skip_bitflip:
 
   stage_finds[STAGE_ARITH8]  += new_hit_cnt - orig_hit_cnt;
   stage_cycles[STAGE_ARITH8] += stage_max;
+
+	if ((!direct_start && ((get_cur_time()- last_path_time) >= detSatTimeout))
+				|| (direct_start && ((get_cur_time() - curSatTime) >= satTimeout))){
+		goto havoc_stage;
+	}
 	
 
   /* 16-bit arithmetics, both endians. */
@@ -5914,6 +5968,11 @@ skip_bitflip:
   stage_finds[STAGE_ARITH16]  += new_hit_cnt - orig_hit_cnt;
   stage_cycles[STAGE_ARITH16] += stage_max;
 
+	if ((!direct_start && ((get_cur_time()- last_path_time) >= detSatTimeout))
+				|| (direct_start && ((get_cur_time() - curSatTime) >= satTimeout))){
+		goto havoc_stage;
+	}
+
   /* 32-bit arithmetics, both endians. */
 
   if (len < 4) goto skip_arith;
@@ -6006,6 +6065,11 @@ skip_bitflip:
   stage_finds[STAGE_ARITH32]  += new_hit_cnt - orig_hit_cnt;
   stage_cycles[STAGE_ARITH32] += stage_max;
 
+	if ((!direct_start && ((get_cur_time()- last_path_time) >= detSatTimeout))
+				|| (direct_start && ((get_cur_time() - curSatTime) >= satTimeout))){
+		goto havoc_stage;
+	}
+
 skip_arith:
 
   /**********************
@@ -6061,7 +6125,12 @@ skip_arith:
   new_hit_cnt = queued_paths + unique_crashes;
 
   stage_finds[STAGE_INTEREST8]  += new_hit_cnt - orig_hit_cnt;
-  stage_cycles[STAGE_INTEREST8] += stage_max;
+	stage_cycles[STAGE_INTEREST8] += stage_max;
+
+	if ((!direct_start && ((get_cur_time()- last_path_time) >= detSatTimeout))
+				|| (direct_start && ((get_cur_time() - curSatTime) >= satTimeout))){
+		goto havoc_stage;
+	}
 
   /* Setting 16-bit integers, both endians. */
 	
@@ -6131,6 +6200,11 @@ skip_arith:
   stage_finds[STAGE_INTEREST16]  += new_hit_cnt - orig_hit_cnt;
   stage_cycles[STAGE_INTEREST16] += stage_max;
 
+	if ((!direct_start && ((get_cur_time()- last_path_time) >= detSatTimeout))
+				|| (direct_start && ((get_cur_time() - curSatTime) >= satTimeout))){
+		goto havoc_stage;
+	}
+
   if (len < 4) goto skip_interest;
 	
   /* Setting 32-bit integers, both endians. */
@@ -6199,6 +6273,11 @@ skip_arith:
 
   stage_finds[STAGE_INTEREST32]  += new_hit_cnt - orig_hit_cnt;
   stage_cycles[STAGE_INTEREST32] += stage_max;
+
+	if ((!direct_start && ((get_cur_time()- last_path_time) >= detSatTimeout))
+				|| (direct_start && ((get_cur_time() - curSatTime) >= satTimeout))){
+		goto havoc_stage;
+	}
 	
 skip_interest:
 
@@ -6266,6 +6345,10 @@ skip_interest:
   stage_finds[STAGE_EXTRAS_UO]  += new_hit_cnt - orig_hit_cnt;
   stage_cycles[STAGE_EXTRAS_UO] += stage_max;
 
+	if ((!direct_start && ((get_cur_time()- last_path_time) >= detSatTimeout))
+				|| (direct_start && ((get_cur_time() - curSatTime) >= satTimeout))){
+		goto havoc_stage;
+	}
   /* Insertion of user-supplied extras. */
 
   stage_name  = "user extras (insert)";
@@ -6314,6 +6397,11 @@ skip_interest:
 
   stage_finds[STAGE_EXTRAS_UI]  += new_hit_cnt - orig_hit_cnt;
   stage_cycles[STAGE_EXTRAS_UI] += stage_max;
+
+	if ((!direct_start && ((get_cur_time()- last_path_time) >= detSatTimeout))
+				|| (direct_start && ((get_cur_time() - curSatTime) >= satTimeout))){
+		goto havoc_stage;
+	}
 
 skip_user_extras:
 
@@ -7935,7 +8023,7 @@ static void record_cov(u64 cur_min){
 	u8 * fn = alloc_printf("%s/function_cov.txt", out_dir);
 	FILE* f2 = fopen(fn, "a");
 	if (f2 == NULL) PFATAL("Can't not open '%s'", fn);
-	static recorded = 0;
+	static char recorded = 0;
 	if (!recorded){
 		recorded = 1;
 		fprintf(f2, "min,func_name,cov,selected,num Of exec\n");
@@ -7960,7 +8048,7 @@ static void record_score(){
 	struct queue_entry * q = queue;
 	int id = 0;
 	while(q){
-		fprintf(f2, "%d, %lf, %llu, %u\n", id++, q->relscore, q->numOfExec, q->selected, q->discovered);
+		fprintf(f2, "%d,%lf,%llu,%u,%u\n", id++, q->relscore, q->numOfExec, q->selected, q->discovered);
 		q = q->next;
 	}
 	ck_free(fn);
@@ -8280,6 +8368,7 @@ int main(int argc, char** argv) {
   struct timeval tv;
   struct timezone tz;
 	satTimeout = totalTimeout * 5 / 1000;
+	detSatTimeout = satTimeout;
 
   SAYF(cCYA "afl-fuzz " cBRI VERSION cRST " by <lcamtuf@google.com>\n");
 
@@ -8656,6 +8745,7 @@ int main(int argc, char** argv) {
 		if (funcqueue_cur != NULL){
 			funcqueue_cur = funcqueue_cur -> funcnext;
 			queue_cur = old_queue_cur;
+			current_func_entry ++;
 		} else {
     	queue_cur = queue_cur->next;
     	current_entry++;

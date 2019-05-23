@@ -43,7 +43,7 @@ def executeTC(tcn):
 	subprocess.run(cmd)
 	cmd = ["bash", "./execute.sh"]
 	subprocess.run(cmd)
-	cmd = ["gcov" ,"-b", "grep.c"]
+	cmd = ["gcov" ,"-b", "grep-gcov.c"]
 	try:
 		res = subprocess.check_output(cmd)
 	except subprocess.CalledProcessError as e:
