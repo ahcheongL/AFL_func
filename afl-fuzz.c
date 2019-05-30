@@ -87,6 +87,7 @@ u64 detSatTimeout;
 u64 curSatTime = 0;
 u32 mutTC = 0;
 u32 mutfuncTC = 0;
+double highScore;
 
 EXP_ST u8 *in_dir,                    /* Input directory with test cases  */
           *out_file,                  /* File to fuzz, if any             */
@@ -159,6 +160,9 @@ static volatile u8 stop_soon,         /* Ctrl-C pressed?                  */
                    child_timed_out;   /* Traced process timed out?        */
 
 static u8 direct_start = 0;
+static char direct_prob1 = -1;     //prob of taking higher priority queue
+static char direct_prob2 = -1;     //prob of using func. rel. on score 
+static char using_func = 0;
 
 EXP_ST u32 queued_paths,              /* Total number of queued testcases */
            queued_variable,           /* Testcases with variable behavior */
@@ -177,6 +181,7 @@ EXP_ST u32 queued_paths,              /* Total number of queued testcases */
            current_entry,             /* Current queue entry ID           */
 					 current_func_entry,
 					 func_entry_size,
+					 discarded,
            havoc_div = 1;             /* Cycle count divisor for havoc    */
 
 EXP_ST u64 total_crashes,             /* Total number of crashes          */
@@ -185,6 +190,7 @@ EXP_ST u64 total_crashes,             /* Total number of crashes          */
            unique_tmouts,             /* Timeouts with unique signatures  */
            unique_hangs,              /* Hangs with unique signatures     */
            total_execs,               /* Total execve() calls             */
+					 rel_execs,
            start_time,                /* Unix start time (ms)             */
            last_path_time,            /* Time for most recent path (ms)   */
            last_crash_time,           /* Time for most recent crash (ms)  */
@@ -294,8 +300,7 @@ struct queue_entry {
 
   struct queue_entry *next,           /* Next element, if any             */
                      *next_100,       /* 100 elements ahead               */
-										 *funcnext,
-										 *funcprev;
+										 *funcnext;
 
 };
 
@@ -1338,6 +1343,8 @@ static void update_bitmap_score(struct queue_entry* q) {
 static u8 run_target(char ** argv, u32 timeout);
 static void write_to_testcase(void * mem, u32 len);
 
+static void show_stats(void);
+
 /*
 	choose one of function as a target, save the index into global variable target_func.
 	calculate relevance of each function with the target function
@@ -1368,6 +1375,7 @@ static void select_target(char ** argv){
 		}
 		funclist[i]-> cov = cov;
 	}
+	//show_stats();
 	
 	u64 cur_ms = get_cur_time(); 
 	//reset saturation time
@@ -1439,6 +1447,7 @@ static void select_target(char ** argv){
 			if (out_buf != NULL){
 				write_to_testcase(out_buf, len);
 				run_target(argv, exec_tmout);
+				rel_execs ++;
 			}
 			munmap(out_buf,len);
 			//get number of nodes covered
@@ -1463,6 +1472,8 @@ static void select_target(char ** argv){
 			q -> numOfCoveredNode = numOfCoveredFuncNodes;
 			q = q-> next;
 		}
+		if (funcqueue_cur != NULL)
+			{discarded += func_entry_size - current_func_entry;}
 		q = queue_cur;
 		funcqueue_cur = NULL;
 		funcqueue_top = NULL;
@@ -1471,46 +1482,23 @@ static void select_target(char ** argv){
 		while(q){
 			q -> relscore = (double) q -> numOfCoveredNode
 												/ funclist[target_func] -> maxNumOfCoveredNode;
-			if ( q->relscore > 0.6 && direct_start){
+			if ( q->relscore > highScore && direct_start){
 				q->selected ++;
 				func_entry_size ++;
 				if (funcqueue_cur == NULL){
 					funcqueue = q;
 					funcqueue_cur = q;
 					funcqueue_cur -> funcnext = NULL;
-					funcqueue_cur -> funcprev = NULL;
-					funcqueue_top = q;
 				} else {
-					struct queue_entry *q_tmp = funcqueue;
-					char inserted = 0;
-					while(q_tmp != funcqueue_top){
-						if (q_tmp->relscore <= q->relscore){
-							if (q_tmp == funcqueue){
-								funcqueue = q;
-								q -> funcnext = q_tmp;
-								q -> funcprev = NULL;
-								q_tmp -> funcprev = q;
-							} else {
-								q_tmp->funcprev->funcnext = q;
-								q -> funcprev = q_tmp -> funcprev;
-								q -> funcnext = q_tmp;
-								q_tmp -> funcprev = q;
-							}
-							inserted = 1;
-							break;
-						}
-						q_tmp = q_tmp -> funcnext;
-					}
-					if (!inserted){
-						funcqueue_top -> funcnext = q;
-						q-> funcprev = funcqueue_top;
-						funcqueue_top = q;
-						q->funcnext = NULL;
-					}
+					funcqueue_cur -> funcnext = q;
+					funcqueue_cur = q;
+					q -> funcnext = NULL;
 				}
 			}
 			q = q->next;
+			if (func_entry_size > 100) {  break;}
 		}
+		funcqueue_top = funcqueue_cur;
 		funcqueue_cur = funcqueue;
 	}
 }
@@ -2761,7 +2749,6 @@ static void write_with_gap(void* mem, u32 len, u32 skip_at, u32 skip_len) {
 }
 
 
-static void show_stats(void);
 
 /* Calibrate a new test case. This is done when processing the input directory
    to warn about flaky or otherwise problematic test cases early on; and when
@@ -3666,6 +3653,7 @@ static void write_stats_file(double bitmap_cvg, double stability, double eps) {
              "cycles_done       : %llu\n"
              "execs_done        : %llu\n"
 						 "execs_havoc       : %llu\n"
+						 "execs_rel         : %llu\n"
              "execs_per_sec     : %0.02f\n"
              "paths_total       : %u\n"
              "paths_favored     : %u\n"
@@ -3691,7 +3679,7 @@ static void write_stats_file(double bitmap_cvg, double stability, double eps) {
              "command_line      : %s\n"
 						 "# of mutated func TC : %u / %u\n",
              start_time / 1000, get_cur_time() / 1000, getpid(),
-             queue_cycle ? (queue_cycle - 1) : 0, total_execs,
+             queue_cycle ? (queue_cycle - 1) : 0, total_execs, rel_execs,
 						 stage_cycles[STAGE_HAVOC] + stage_cycles[STAGE_SPLICE], eps,
              queued_paths, queued_favored, queued_discovered, queued_imported,
              max_depth, current_entry, pending_favored, pending_not_fuzzed,
@@ -4209,14 +4197,14 @@ static void show_stats(void) {
 	if (cur_ms - last_rec_ms > 60 * 1000){
 		if (valrecfile != NULL){
 			if (funclist != NULL && funclist[target_func] != NULL){
-				fprintf(valrecfile, "%llu,%u,%s,%lf,%u\n",
+				fprintf(valrecfile, "%llu,%u,%s,%lf,%u,%u,%u,%u\n",
 						 (cur_ms - start_time) / 1000 / 60,
 						 queued_paths, funclist[target_func]->name,
-						 funclist[target_func]->cov,  current_entry);
+						 funclist[target_func]->cov,  current_entry, func_entry_size,discarded);
 			} else {
-				fprintf(valrecfile, "%llu,%u,NONE,%u\n",
+				fprintf(valrecfile, "%llu,%u,NONE,%u,%u,%u\n",
 						 (cur_ms - start_time) / 1000 / 60,
-						 queued_paths, current_entry);
+						 queued_paths, current_entry,func_entry_size,discarded);
 			}
 			last_rec_ms = cur_ms;
 		}
@@ -4401,7 +4389,7 @@ static void show_stats(void) {
      together, but then cram them into a fixed-width field - so we need to
      put them in a temporary buffer first. */
 
-	if (funcqueue_cur != NULL){
+	if (using_func){
 		sprintf(tmp, "func - %u (%0.02f%%)", current_func_entry,
           ((double)current_func_entry * 100) / func_entry_size);
 	} else {
@@ -4513,6 +4501,9 @@ static void show_stats(void) {
 
 	sprintf(tmp, "%u/%u (%0.02f%%)", mutfuncTC, mutTC, (float) mutfuncTC / mutTC*100);
 	SAYF(bV bSTOP "# of mutated TC (func/all) : " cRST " %-50s" bSTG bV "\n", tmp);
+
+	sprintf(tmp, "%lf", highScore);
+	SAYF(bV bSTOP "score threashold : " cRST " %-50s" bSTG bV "\n", tmp);
 
   /* Aaaalmost there... hold on! */
 
@@ -5072,7 +5063,7 @@ static u32 calculate_score(struct queue_entry* q) {
 
   }
 
-	if (direct_start) {
+	if (direct_start && ((direct_prob2 != -1) && (direct_prob2 > UR(100)))) {
 		double score1 = (q -> relscore - 0.5) * (1.0 - funclist[target_func] -> cov); 
 		double powscore = pow(2.0, 10.0 * score1);
 		perf_score *= (powscore >= 1.0) ? powscore : 1.0;
@@ -5289,9 +5280,10 @@ static u8 fuzz_one(char** argv) {
   u32 a_len = 0;
 	
 	//Select from funcqueue if needed.
-	if (funcqueue_cur != NULL){
+	if (funcqueue_cur != NULL && ((direct_prob1 != -1) && (direct_prob1 > UR(100)))){
 		old_queue_cur = queue_cur;
 		queue_cur = funcqueue_cur;
+		using_func = 1;
 	}
 #ifdef IGNORE_FINDS
 
@@ -5416,7 +5408,7 @@ static u8 fuzz_one(char** argv) {
    *********************/
 
 
-	if (funcqueue_cur != NULL) mutfuncTC++;
+	if (using_func) mutfuncTC++;
 	mutTC ++;
 
   orig_perf = perf_score = calculate_score(queue_cur);
@@ -7985,7 +7977,7 @@ void record_init(){
 	u8* fn = alloc_printf("%s/minuate_rec.csv", out_dir);
 	valrecfile = fopen(fn, "w");	
 	if (valrecfile == NULL) PFATAL("Unable to open '%s'", fn);
-	fprintf(valrecfile,"min,uniq paths,current target func,cov, current test case\n");
+	fprintf(valrecfile,"min,uniq paths,current target func,cov, current test case, cur_func_entry_size\n");
 	ck_free(fn);
 }
 
@@ -8369,6 +8361,7 @@ int main(int argc, char** argv) {
   struct timezone tz;
 	satTimeout = totalTimeout * 5 / 1000;
 	detSatTimeout = satTimeout;
+	highScore = 0.7;
 
   SAYF(cCYA "afl-fuzz " cBRI VERSION cRST " by <lcamtuf@google.com>\n");
 
@@ -8377,7 +8370,7 @@ int main(int argc, char** argv) {
   gettimeofday(&tv, &tz);
   srandom(tv.tv_sec ^ tv.tv_usec ^ getpid());
 
-  while ((opt = getopt(argc, argv, "+i:o:f:m:t:F:I:T:dnCB:S:M:x:Q")) > 0)
+  while ((opt = getopt(argc, argv, "+i:o:f:m:t:F:I:p:T:dnCB:S:M:x:Q")) > 0)
 
     switch (opt) {
 
@@ -8559,6 +8552,14 @@ int main(int argc, char** argv) {
 				if (initial_fuzzing == 0) direct_start = 1;
 				break;
 
+			case 'p':
+				if (direct_prob1 == -1){
+					direct_prob1 = atoi(optarg);
+				} else {
+					direct_prob2 = atoi(optarg);
+				}
+				break;
+				
       default:
 
         usage(argv[0]);
@@ -8742,7 +8743,7 @@ int main(int argc, char** argv) {
     if (stop_soon) break;
 
 		//back to normal queue;
-		if (funcqueue_cur != NULL){
+		if (using_func){
 			funcqueue_cur = funcqueue_cur -> funcnext;
 			queue_cur = old_queue_cur;
 			current_func_entry ++;
@@ -8750,6 +8751,7 @@ int main(int argc, char** argv) {
     	queue_cur = queue_cur->next;
     	current_entry++;
 		}
+		using_func = 0;
   }
 
 	//record_func_cov();
