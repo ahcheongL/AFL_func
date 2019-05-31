@@ -5274,12 +5274,14 @@ static u8 fuzz_one(char** argv) {
   u64 havoc_queued,  orig_hit_cnt, new_hit_cnt;
   u32 splice_cycle = 0, perf_score = 100, orig_perf, prev_cksum, eff_cnt = 1;
 
-  u8  ret_val = 1, doing_det = 0;
-
+  u8  ret_val = 1, doing_det = 0, skipdet = 1;
   u8  a_collect[MAX_AUTO_EXTRA];
   u32 a_len = 0;
 	
 	//Select from funcqueue if needed.
+	if ((direct_prob1 != -1) && (direct_prob1 + direct_prob2)/2 < UR(100)){
+		skipdet = 0;
+	}
 	if (funcqueue_cur != NULL && ((direct_prob1 != -1) && (direct_prob1 > UR(100)))){
 		old_queue_cur = queue_cur;
 		queue_cur = funcqueue_cur;
@@ -5535,8 +5537,8 @@ static u8 fuzz_one(char** argv) {
   stage_finds[STAGE_FLIP1]  += new_hit_cnt - orig_hit_cnt;
   stage_cycles[STAGE_FLIP1] += stage_max;
 
-	if ((!direct_start && ((get_cur_time()- last_path_time) >= detSatTimeout))
-				|| (direct_start && ((get_cur_time() - curSatTime) >= satTimeout))){
+	if ((skipdet &&((!direct_start && ((get_cur_time()- last_path_time) >= detSatTimeout))
+				|| (direct_start && ((get_cur_time() - curSatTime) >= satTimeout))))){
 		goto havoc_stage;
 	}
 
@@ -5567,8 +5569,8 @@ static u8 fuzz_one(char** argv) {
   stage_finds[STAGE_FLIP2]  += new_hit_cnt - orig_hit_cnt;
   stage_cycles[STAGE_FLIP2] += stage_max;
 
-	if ((!direct_start && ((get_cur_time()- last_path_time) >= detSatTimeout))
-				|| (direct_start && ((get_cur_time() - curSatTime) >= satTimeout))){
+	if ((skipdet &&((!direct_start && ((get_cur_time()- last_path_time) >= detSatTimeout))
+				|| (direct_start && ((get_cur_time() - curSatTime) >= satTimeout))))){
 		goto havoc_stage;
 	}
 
@@ -5603,8 +5605,8 @@ static u8 fuzz_one(char** argv) {
   stage_finds[STAGE_FLIP4]  += new_hit_cnt - orig_hit_cnt;
   stage_cycles[STAGE_FLIP4] += stage_max;
 
-	if ((!direct_start && ((get_cur_time()- last_path_time) >= detSatTimeout))
-				|| (direct_start && ((get_cur_time() - curSatTime) >= satTimeout))){
+	if ((skipdet &&((!direct_start && ((get_cur_time()- last_path_time) >= detSatTimeout))
+				|| (direct_start && ((get_cur_time() - curSatTime) >= satTimeout))))){
 		goto havoc_stage;
 	}
 
@@ -5700,8 +5702,8 @@ static u8 fuzz_one(char** argv) {
   stage_finds[STAGE_FLIP8]  += new_hit_cnt - orig_hit_cnt;
   stage_cycles[STAGE_FLIP8] += stage_max;
 
-	if ((!direct_start && ((get_cur_time()- last_path_time) >= detSatTimeout))
-				|| (direct_start && ((get_cur_time() - curSatTime) >= satTimeout))){
+	if ((skipdet &&((!direct_start && ((get_cur_time()- last_path_time) >= detSatTimeout))
+				|| (direct_start && ((get_cur_time() - curSatTime) >= satTimeout))))){
 		goto havoc_stage;
 	}
 	
@@ -5742,8 +5744,8 @@ static u8 fuzz_one(char** argv) {
   stage_finds[STAGE_FLIP16]  += new_hit_cnt - orig_hit_cnt;
   stage_cycles[STAGE_FLIP16] += stage_max;
 
-	if ((!direct_start && ((get_cur_time()- last_path_time) >= detSatTimeout))
-				|| (direct_start && ((get_cur_time() - curSatTime) >= satTimeout))){
+	if ((skipdet &&((!direct_start && ((get_cur_time()- last_path_time) >= detSatTimeout))
+				|| (direct_start && ((get_cur_time() - curSatTime) >= satTimeout))))){
 		goto havoc_stage;
 	}
 
@@ -5783,8 +5785,8 @@ static u8 fuzz_one(char** argv) {
   stage_finds[STAGE_FLIP32]  += new_hit_cnt - orig_hit_cnt;
   stage_cycles[STAGE_FLIP32] += stage_max;
 
-	if ((!direct_start && ((get_cur_time()- last_path_time) >= detSatTimeout))
-				|| (direct_start && ((get_cur_time() - curSatTime) >= satTimeout))){
+	if ((skipdet &&((!direct_start && ((get_cur_time()- last_path_time) >= detSatTimeout))
+				|| (direct_start && ((get_cur_time() - curSatTime) >= satTimeout))))){
 		goto havoc_stage;
 	}
 	
@@ -5860,8 +5862,8 @@ skip_bitflip:
   stage_finds[STAGE_ARITH8]  += new_hit_cnt - orig_hit_cnt;
   stage_cycles[STAGE_ARITH8] += stage_max;
 
-	if ((!direct_start && ((get_cur_time()- last_path_time) >= detSatTimeout))
-				|| (direct_start && ((get_cur_time() - curSatTime) >= satTimeout))){
+	if ((skipdet &&((!direct_start && ((get_cur_time()- last_path_time) >= detSatTimeout))
+				|| (direct_start && ((get_cur_time() - curSatTime) >= satTimeout))))){
 		goto havoc_stage;
 	}
 	
@@ -5960,8 +5962,8 @@ skip_bitflip:
   stage_finds[STAGE_ARITH16]  += new_hit_cnt - orig_hit_cnt;
   stage_cycles[STAGE_ARITH16] += stage_max;
 
-	if ((!direct_start && ((get_cur_time()- last_path_time) >= detSatTimeout))
-				|| (direct_start && ((get_cur_time() - curSatTime) >= satTimeout))){
+	if ((skipdet &&((!direct_start && ((get_cur_time()- last_path_time) >= detSatTimeout))
+				|| (direct_start && ((get_cur_time() - curSatTime) >= satTimeout))))){
 		goto havoc_stage;
 	}
 
@@ -6057,8 +6059,8 @@ skip_bitflip:
   stage_finds[STAGE_ARITH32]  += new_hit_cnt - orig_hit_cnt;
   stage_cycles[STAGE_ARITH32] += stage_max;
 
-	if ((!direct_start && ((get_cur_time()- last_path_time) >= detSatTimeout))
-				|| (direct_start && ((get_cur_time() - curSatTime) >= satTimeout))){
+	if ((skipdet &&((!direct_start && ((get_cur_time()- last_path_time) >= detSatTimeout))
+				|| (direct_start && ((get_cur_time() - curSatTime) >= satTimeout))))){
 		goto havoc_stage;
 	}
 
@@ -6119,8 +6121,8 @@ skip_arith:
   stage_finds[STAGE_INTEREST8]  += new_hit_cnt - orig_hit_cnt;
 	stage_cycles[STAGE_INTEREST8] += stage_max;
 
-	if ((!direct_start && ((get_cur_time()- last_path_time) >= detSatTimeout))
-				|| (direct_start && ((get_cur_time() - curSatTime) >= satTimeout))){
+	if ((skipdet &&((!direct_start && ((get_cur_time()- last_path_time) >= detSatTimeout))
+				|| (direct_start && ((get_cur_time() - curSatTime) >= satTimeout))))){
 		goto havoc_stage;
 	}
 
@@ -6192,8 +6194,8 @@ skip_arith:
   stage_finds[STAGE_INTEREST16]  += new_hit_cnt - orig_hit_cnt;
   stage_cycles[STAGE_INTEREST16] += stage_max;
 
-	if ((!direct_start && ((get_cur_time()- last_path_time) >= detSatTimeout))
-				|| (direct_start && ((get_cur_time() - curSatTime) >= satTimeout))){
+	if ((skipdet &&((!direct_start && ((get_cur_time()- last_path_time) >= detSatTimeout))
+				|| (direct_start && ((get_cur_time() - curSatTime) >= satTimeout))))){
 		goto havoc_stage;
 	}
 
@@ -6266,8 +6268,8 @@ skip_arith:
   stage_finds[STAGE_INTEREST32]  += new_hit_cnt - orig_hit_cnt;
   stage_cycles[STAGE_INTEREST32] += stage_max;
 
-	if ((!direct_start && ((get_cur_time()- last_path_time) >= detSatTimeout))
-				|| (direct_start && ((get_cur_time() - curSatTime) >= satTimeout))){
+	if ((skipdet &&((!direct_start && ((get_cur_time()- last_path_time) >= detSatTimeout))
+				|| (direct_start && ((get_cur_time() - curSatTime) >= satTimeout))))){
 		goto havoc_stage;
 	}
 	
@@ -6337,8 +6339,8 @@ skip_interest:
   stage_finds[STAGE_EXTRAS_UO]  += new_hit_cnt - orig_hit_cnt;
   stage_cycles[STAGE_EXTRAS_UO] += stage_max;
 
-	if ((!direct_start && ((get_cur_time()- last_path_time) >= detSatTimeout))
-				|| (direct_start && ((get_cur_time() - curSatTime) >= satTimeout))){
+	if ((skipdet &&((!direct_start && ((get_cur_time()- last_path_time) >= detSatTimeout))
+				|| (direct_start && ((get_cur_time() - curSatTime) >= satTimeout))))){
 		goto havoc_stage;
 	}
   /* Insertion of user-supplied extras. */
@@ -6390,8 +6392,8 @@ skip_interest:
   stage_finds[STAGE_EXTRAS_UI]  += new_hit_cnt - orig_hit_cnt;
   stage_cycles[STAGE_EXTRAS_UI] += stage_max;
 
-	if ((!direct_start && ((get_cur_time()- last_path_time) >= detSatTimeout))
-				|| (direct_start && ((get_cur_time() - curSatTime) >= satTimeout))){
+	if ((skipdet &&((!direct_start && ((get_cur_time()- last_path_time) >= detSatTimeout))
+				|| (direct_start && ((get_cur_time() - curSatTime) >= satTimeout))))){
 		goto havoc_stage;
 	}
 
