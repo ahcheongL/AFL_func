@@ -81,7 +81,7 @@
 /* Lots of globals, but mostly for the status UI and other things where it
    really makes no sense to haul them around as function parameters. */
 
-u64 totalTimeout = 10 * 60 * 60 * 1000;
+u64 totalTimeout = 24 * 60 * 60 * 1000;
 u64 satTimeout;
 u64 detSatTimeout;
 u64 curSatTime = 0;
@@ -4197,7 +4197,7 @@ static void show_stats(void) {
 	if (cur_ms - last_rec_ms > 60 * 1000){
 		if (valrecfile != NULL){
 			if (funclist != NULL && funclist[target_func] != NULL){
-				fprintf(valrecfile, "%llu,%u,%s,%lf,%u,%u,%u,%u\n",
+				fprintf(valrecfile, "%llu,%u,%s,%lf,%u,%u,%u\n",
 						 (cur_ms - start_time) / 1000 / 60,
 						 queued_paths, funclist[target_func]->name,
 						 funclist[target_func]->cov,  current_entry, func_entry_size,discarded);
@@ -5280,7 +5280,7 @@ static u8 fuzz_one(char** argv) {
 	
 	//Select from funcqueue if needed.
 	if ((direct_prob1 != -1) && (direct_prob1 + direct_prob2)/2 < UR(100)){
-		skipdet = 0;
+		//skipdet = 0;
 	}
 	if (funcqueue_cur != NULL && ((direct_prob1 != -1) && (direct_prob1 > UR(100)))){
 		old_queue_cur = queue_cur;
@@ -7979,7 +7979,7 @@ void record_init(){
 	u8* fn = alloc_printf("%s/minuate_rec.csv", out_dir);
 	valrecfile = fopen(fn, "w");	
 	if (valrecfile == NULL) PFATAL("Unable to open '%s'", fn);
-	fprintf(valrecfile,"min,uniq paths,current target func,cov, current test case, cur_func_entry_size\n");
+	fprintf(valrecfile,"min,uniq paths,current target func,cov, current test case, cur_func_entry_size,# of discarded\n");
 	ck_free(fn);
 }
 

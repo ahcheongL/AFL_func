@@ -130,13 +130,22 @@ bool AFLCoverage::runOnModule(Module &M) {
 	func_idx = 0;
 
 	//append it all in one file.
-	char tmpstr[24];
-	snprintf(tmpstr,24, "FInfo.txt");
+	const std::string & sourcename = M.getSourceFileName();
+	std::string Fname = "FInfo" + sourcename + ".txt";
+	char Fnamech[Fname.size()+1];
+	std::copy(Fname.begin(), Fname.end(), Fnamech);
+	Fnamech[Fname.size()] = 0;
+	int i;
+	for (i = 0; i < Fname.size(); i ++){
+		if (Fnamech[i] == '/'){
+			Fnamech[i] = '-';
+		}
+	}
 	std::ofstream funcinfos;
-	funcinfos.open(tmpstr, std::ofstream::out | std::ofstream::app);
+	funcinfos.open(Fnamech, std::ofstream::out | std::ofstream::app);
 
 
-	std::cout << "generated " << tmpstr << " file.\n";
+	std::cout << "generated " << Fname << " file.\n";
 	funcinfos << num_func << "\n";
 
   for (auto &F : M){
@@ -166,13 +175,6 @@ bool AFLCoverage::runOnModule(Module &M) {
 
       unsigned int cur_loc = AFL_R(MAP_SIZE);
 
-			while (1){
-				if (nodebitmap[cur_loc / 8] & (1 << (cur_loc % 8))){
-					cur_loc = AFL_R(MAP_SIZE);
-				} else {
-					break;
-				}
-			}
 			nodebitmap[cur_loc /8] |= 1 << (cur_loc % 8);
 			blocklist.push_back(cur_loc);
 
