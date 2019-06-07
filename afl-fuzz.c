@@ -5063,7 +5063,7 @@ static u32 calculate_score(struct queue_entry* q) {
 
   }
 
-	if (direct_start && ((direct_prob2 != -1) && (direct_prob2 > UR(100)))) {
+	if (direct_start && ((direct_prob2 == -1) || (direct_prob2 > UR(100)))) {
 		double score1 = (q -> relscore - 0.5) * (1.0 - funclist[target_func] -> cov); 
 		double powscore = pow(2.0, 10.0 * score1);
 		perf_score *= (powscore >= 1.0) ? powscore : 1.0;
@@ -5278,11 +5278,7 @@ static u8 fuzz_one(char** argv) {
   u8  a_collect[MAX_AUTO_EXTRA];
   u32 a_len = 0;
 	
-	//Select from funcqueue if needed.
-	if ((direct_prob1 != -1) && (direct_prob1 + direct_prob2)/2 < UR(100)){
-		//skipdet = 0;
-	}
-	if (funcqueue_cur != NULL && ((direct_prob1 != -1) && (direct_prob1 > UR(100)))){
+	if (funcqueue_cur != NULL && ((direct_prob1 == -1) || (direct_prob1 > UR(100)))){
 		old_queue_cur = queue_cur;
 		queue_cur = funcqueue_cur;
 		using_func = 1;

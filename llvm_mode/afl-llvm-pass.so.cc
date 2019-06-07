@@ -126,6 +126,14 @@ bool AFLCoverage::runOnModule(Module &M) {
 		}
 		if (bb_exist >= NUMNODE) func_idx++;
 	}
+
+	llvm::Module::IFuncListType & funclist = M.getIFuncList();
+	std::cout << "list of functions : \n";
+	for (auto & F1 : funclist){
+		std::string fnamme = F1.getName();
+		std::cout << fnamme << "\n";
+	}
+
 	unsigned int num_func = func_idx;
 	func_idx = 0;
 
@@ -150,6 +158,7 @@ bool AFLCoverage::runOnModule(Module &M) {
 
   for (auto &F : M){
 		std::string funcName = F.getName();
+		std::cout << "implementing " << funcName << "\n";
 		std::vector<std::string> blacklist = { "asan.", "llvm.", "sancov.",
 				"free","malloc","calloc","realloc"};
 		std::vector<unsigned int> blocklist = {};
@@ -165,7 +174,6 @@ bool AFLCoverage::runOnModule(Module &M) {
 		if(cont_flag) continue;
 
 		for (auto &BB : F) {
-
       BasicBlock::iterator IP = BB.getFirstInsertionPt();
       IRBuilder<> IRB(&(*IP));
 
