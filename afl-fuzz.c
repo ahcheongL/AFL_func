@@ -1375,7 +1375,7 @@ static void select_target(char ** argv){
 		}
 		funclist[i]-> cov = cov;
 	}
-	//show_stats();
+	if (target_func == -1) target_func = UR(num_func);
 	
 	u64 cur_ms = get_cur_time(); 
 	//reset saturation time
@@ -1412,6 +1412,7 @@ static void select_target(char ** argv){
 			funclist[i] -> relevance = (double) func_num / target_num;
 		}
 		u32 idx1, idx2;
+		char numOffunc = 0;
 		u32 relidx[5] = {0, 0, 0, 0, target_func};
 		double rel[4] = {0.0, 0.0, 0.0 , 0.0};
 
@@ -1422,10 +1423,13 @@ static void select_target(char ** argv){
 				if (currel > rel[idx2] && strcmp("main", funclist[idx1]->name)){
 					rel[idx2] = currel;
 					relidx[idx2] = idx1;
+					numOffunc = (idx2 > numOffunc) ? (idx2+1) : numOffunc;
 					break;
 				}
 			}
 		}
+
+		relidx[numOffunc] = target_func;
 
 		//Compute score for all testcase
 		q = queue;
@@ -1454,7 +1458,7 @@ static void select_target(char ** argv){
 			while (j--){
 				if (trace_bits[j]){
 					numOfCoveredNodes++;
-					for (idx1 = 0; idx1 < 6; idx1++){
+					for (idx1 = 0; idx1 < numOffunc + 1; idx1++){
 						if(pass){ pass = 0; break;}
 						for (idx2 = 0; idx2 < funclist[relidx[idx1]]->numOfNodes; idx2++){
 							if (funclist[relidx[idx1]]->nodes[idx2] == j){
@@ -8337,7 +8341,6 @@ void handler(int sig){
 	size = backtrace(array,10);
   fprintf(stderr, "Segmentation Fault\n");
 	fprintf(stderr, "stage : %s\n", stage_name);
-  backtrace_symbols_fd(array,size, STDERR_FILENO);
 	exit(1);
 
 }
