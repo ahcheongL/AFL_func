@@ -171,6 +171,7 @@ bool AFLCoverage::runOnModule(Module &M) {
 				break;
 			}
 		}
+		std::cout << "Function : " << funcName << "\n";
 		if(cont_flag) continue;
 
 		for (auto &BB : F) {
@@ -182,6 +183,7 @@ bool AFLCoverage::runOnModule(Module &M) {
       /* Make up cur_loc */
 
       unsigned int cur_loc = AFL_R(MAP_SIZE);
+			std::cout << cur_loc << "\n";
 
 			nodebitmap[cur_loc /8] |= 1 << (cur_loc % 8);
 			blocklist.push_back(cur_loc);

@@ -81,7 +81,7 @@
 /* Lots of globals, but mostly for the status UI and other things where it
    really makes no sense to haul them around as function parameters. */
 
-u64 totalTimeout = 24 * 60 * 60 * 1000;
+u64 totalTimeout = 10 * 60 * 60 * 1000;
 u64 satTimeout;
 u64 detSatTimeout;
 u64 curSatTime = 0;
@@ -1412,7 +1412,7 @@ static void select_target(char ** argv){
 			funclist[i] -> relevance = (double) func_num / target_num;
 		}
 		u32 idx1, idx2;
-		char numOffunc = 0;
+		int numOffunc = 0;
 		u32 relidx[5] = {0, 0, 0, 0, target_func};
 		double rel[4] = {0.0, 0.0, 0.0 , 0.0};
 
@@ -5068,8 +5068,7 @@ static u32 calculate_score(struct queue_entry* q) {
   }
 
 	if (direct_start && ((direct_prob2 == -1) || (direct_prob2 > UR(100)))) {
-		double score1 = (q -> relscore - 0.5) * (1.0 - funclist[target_func] -> cov); 
-		double powscore = pow(2.0, 10.0 * score1);
+		double powscore = pow(2.0, 10.0 * (q -> relscore - 0.5));
 		perf_score *= (powscore >= 1.0) ? powscore : 1.0;
 	}
   /* Make sure that we don't go over limit. */
@@ -5278,9 +5277,11 @@ static u8 fuzz_one(char** argv) {
   u64 havoc_queued,  orig_hit_cnt, new_hit_cnt;
   u32 splice_cycle = 0, perf_score = 100, orig_perf, prev_cksum, eff_cnt = 1;
 
-  u8  ret_val = 1, doing_det = 0, skipdet = 1;
+  u8  ret_val = 1, doing_det = 0;
   u8  a_collect[MAX_AUTO_EXTRA];
   u32 a_len = 0;
+	
+	double powscore = pow(2.0, 10.0 * (queue_cur -> relscore - 1.0));
 	
 	if (funcqueue_cur != NULL && ((direct_prob1 == -1) || (direct_prob1 > UR(100)))){
 		old_queue_cur = queue_cur;
@@ -5445,6 +5446,9 @@ static u8 fuzz_one(char** argv) {
 
   stage_short = "flip1";
   stage_max   = len << 3;
+	if (direct_start && ((direct_prob2 == -1) || (direct_prob2 > UR(100)))){
+		stage_max = (int) (stage_max * powscore);
+	}
   stage_name  = "bitflip 1/1";
 
   stage_val_type = STAGE_VAL_NONE;
@@ -5537,17 +5541,14 @@ static u8 fuzz_one(char** argv) {
   stage_finds[STAGE_FLIP1]  += new_hit_cnt - orig_hit_cnt;
   stage_cycles[STAGE_FLIP1] += stage_max;
 
-	if ((skipdet &&((!direct_start && ((get_cur_time()- last_path_time) >= detSatTimeout))
-				|| (direct_start && ((get_cur_time() - curSatTime) >= satTimeout))))){
-		goto havoc_stage;
-	}
-
   /* Two walking bits. */
 
   stage_name  = "bitflip 2/1";
   stage_short = "flip2";
   stage_max   = (len << 3) - 1;
-
+ if (direct_start && ((direct_prob2 == -1) || (direct_prob2 > UR(100)))){
+		stage_max = (int) (stage_max * powscore);
+	}
   orig_hit_cnt = new_hit_cnt;
 
   for (stage_cur = 0; stage_cur < stage_max; stage_cur++) {
@@ -5569,16 +5570,15 @@ static u8 fuzz_one(char** argv) {
   stage_finds[STAGE_FLIP2]  += new_hit_cnt - orig_hit_cnt;
   stage_cycles[STAGE_FLIP2] += stage_max;
 
-	if ((skipdet &&((!direct_start && ((get_cur_time()- last_path_time) >= detSatTimeout))
-				|| (direct_start && ((get_cur_time() - curSatTime) >= satTimeout))))){
-		goto havoc_stage;
-	}
 
   /* Four walking bits. */
 
   stage_name  = "bitflip 4/1";
   stage_short = "flip4";
   stage_max   = (len << 3) - 3;
+if (direct_start && ((direct_prob2 == -1) || (direct_prob2 > UR(100)))){
+		stage_max = (int) (stage_max * powscore);
+	}
 
   orig_hit_cnt = new_hit_cnt;
 
@@ -5605,10 +5605,6 @@ static u8 fuzz_one(char** argv) {
   stage_finds[STAGE_FLIP4]  += new_hit_cnt - orig_hit_cnt;
   stage_cycles[STAGE_FLIP4] += stage_max;
 
-	if ((skipdet &&((!direct_start && ((get_cur_time()- last_path_time) >= detSatTimeout))
-				|| (direct_start && ((get_cur_time() - curSatTime) >= satTimeout))))){
-		goto havoc_stage;
-	}
 
   /* Effector map setup. These macros calculate:
 
@@ -5639,6 +5635,9 @@ static u8 fuzz_one(char** argv) {
   stage_name  = "bitflip 8/8";
   stage_short = "flip8";
   stage_max   = len;
+if (direct_start && ((direct_prob2 == -1) || (direct_prob2 > UR(100)))){
+		stage_max = (int) (stage_max * powscore);
+	}
 
   orig_hit_cnt = new_hit_cnt;
 
@@ -5702,10 +5701,6 @@ static u8 fuzz_one(char** argv) {
   stage_finds[STAGE_FLIP8]  += new_hit_cnt - orig_hit_cnt;
   stage_cycles[STAGE_FLIP8] += stage_max;
 
-	if ((skipdet &&((!direct_start && ((get_cur_time()- last_path_time) >= detSatTimeout))
-				|| (direct_start && ((get_cur_time() - curSatTime) >= satTimeout))))){
-		goto havoc_stage;
-	}
 	
   /* Two walking bytes. */
 
@@ -5715,6 +5710,9 @@ static u8 fuzz_one(char** argv) {
   stage_short = "flip16";
   stage_cur   = 0;
   stage_max   = len - 1;
+	if (direct_start && ((direct_prob2 == -1) || (direct_prob2 > UR(100)))){
+		stage_max = (int) (stage_max * powscore);
+	}
 
   orig_hit_cnt = new_hit_cnt;
 
@@ -5744,10 +5742,6 @@ static u8 fuzz_one(char** argv) {
   stage_finds[STAGE_FLIP16]  += new_hit_cnt - orig_hit_cnt;
   stage_cycles[STAGE_FLIP16] += stage_max;
 
-	if ((skipdet &&((!direct_start && ((get_cur_time()- last_path_time) >= detSatTimeout))
-				|| (direct_start && ((get_cur_time() - curSatTime) >= satTimeout))))){
-		goto havoc_stage;
-	}
 
   if (len < 4) goto skip_bitflip;
 	
@@ -5757,6 +5751,9 @@ static u8 fuzz_one(char** argv) {
   stage_short = "flip32";
   stage_cur   = 0;
   stage_max   = len - 3;
+	if (direct_start && ((direct_prob2 == -1) || (direct_prob2 > UR(100)))){
+		stage_max = (int) (stage_max * powscore);
+	}
 
   orig_hit_cnt = new_hit_cnt;
 
@@ -5785,10 +5782,6 @@ static u8 fuzz_one(char** argv) {
   stage_finds[STAGE_FLIP32]  += new_hit_cnt - orig_hit_cnt;
   stage_cycles[STAGE_FLIP32] += stage_max;
 
-	if ((skipdet &&((!direct_start && ((get_cur_time()- last_path_time) >= detSatTimeout))
-				|| (direct_start && ((get_cur_time() - curSatTime) >= satTimeout))))){
-		goto havoc_stage;
-	}
 	
 skip_bitflip:
 
@@ -5804,6 +5797,9 @@ skip_bitflip:
   stage_short = "arith8";
   stage_cur   = 0;
   stage_max   = 2 * len * ARITH_MAX;
+	if (direct_start && ((direct_prob2 == -1) || (direct_prob2 > UR(100)))){
+		stage_max = (int) (stage_max * powscore);
+	}
 
   stage_val_type = STAGE_VAL_LE;
 
@@ -5862,10 +5858,6 @@ skip_bitflip:
   stage_finds[STAGE_ARITH8]  += new_hit_cnt - orig_hit_cnt;
   stage_cycles[STAGE_ARITH8] += stage_max;
 
-	if ((skipdet &&((!direct_start && ((get_cur_time()- last_path_time) >= detSatTimeout))
-				|| (direct_start && ((get_cur_time() - curSatTime) >= satTimeout))))){
-		goto havoc_stage;
-	}
 	
 
   /* 16-bit arithmetics, both endians. */
@@ -5876,6 +5868,9 @@ skip_bitflip:
   stage_short = "arith16";
   stage_cur   = 0;
   stage_max   = 4 * (len - 1) * ARITH_MAX;
+	if (direct_start && ((direct_prob2 == -1) || (direct_prob2 > UR(100)))){
+		stage_max = (int) (stage_max * powscore);
+	}
 
   orig_hit_cnt = new_hit_cnt;
 
@@ -5962,11 +5957,6 @@ skip_bitflip:
   stage_finds[STAGE_ARITH16]  += new_hit_cnt - orig_hit_cnt;
   stage_cycles[STAGE_ARITH16] += stage_max;
 
-	if ((skipdet &&((!direct_start && ((get_cur_time()- last_path_time) >= detSatTimeout))
-				|| (direct_start && ((get_cur_time() - curSatTime) >= satTimeout))))){
-		goto havoc_stage;
-	}
-
   /* 32-bit arithmetics, both endians. */
 
   if (len < 4) goto skip_arith;
@@ -5975,6 +5965,9 @@ skip_bitflip:
   stage_short = "arith32";
   stage_cur   = 0;
   stage_max   = 4 * (len - 3) * ARITH_MAX;
+	if (direct_start && ((direct_prob2 == -1) || (direct_prob2 > UR(100)))){
+		stage_max = (int) (stage_max * powscore);
+	}
 
   orig_hit_cnt = new_hit_cnt;
 
@@ -6059,10 +6052,6 @@ skip_bitflip:
   stage_finds[STAGE_ARITH32]  += new_hit_cnt - orig_hit_cnt;
   stage_cycles[STAGE_ARITH32] += stage_max;
 
-	if ((skipdet &&((!direct_start && ((get_cur_time()- last_path_time) >= detSatTimeout))
-				|| (direct_start && ((get_cur_time() - curSatTime) >= satTimeout))))){
-		goto havoc_stage;
-	}
 
 skip_arith:
 
@@ -6074,6 +6063,9 @@ skip_arith:
   stage_short = "int8";
   stage_cur   = 0;
   stage_max   = len * sizeof(interesting_8);
+	if (direct_start && ((direct_prob2 == -1) || (direct_prob2 > UR(100)))){
+		stage_max = (int) (stage_max * powscore);
+	}
 
   stage_val_type = STAGE_VAL_LE;
 
@@ -6121,10 +6113,6 @@ skip_arith:
   stage_finds[STAGE_INTEREST8]  += new_hit_cnt - orig_hit_cnt;
 	stage_cycles[STAGE_INTEREST8] += stage_max;
 
-	if ((skipdet &&((!direct_start && ((get_cur_time()- last_path_time) >= detSatTimeout))
-				|| (direct_start && ((get_cur_time() - curSatTime) >= satTimeout))))){
-		goto havoc_stage;
-	}
 
   /* Setting 16-bit integers, both endians. */
 	
@@ -6134,6 +6122,9 @@ skip_arith:
   stage_short = "int16";
   stage_cur   = 0;
   stage_max   = 2 * (len - 1) * (sizeof(interesting_16) >> 1);
+	if (direct_start && ((direct_prob2 == -1) || (direct_prob2 > UR(100)))){
+		stage_max = (int) (stage_max * powscore);
+	}
 
   orig_hit_cnt = new_hit_cnt;
 
@@ -6194,10 +6185,6 @@ skip_arith:
   stage_finds[STAGE_INTEREST16]  += new_hit_cnt - orig_hit_cnt;
   stage_cycles[STAGE_INTEREST16] += stage_max;
 
-	if ((skipdet &&((!direct_start && ((get_cur_time()- last_path_time) >= detSatTimeout))
-				|| (direct_start && ((get_cur_time() - curSatTime) >= satTimeout))))){
-		goto havoc_stage;
-	}
 
   if (len < 4) goto skip_interest;
 	
@@ -6207,6 +6194,9 @@ skip_arith:
   stage_short = "int32";
   stage_cur   = 0;
   stage_max   = 2 * (len - 3) * (sizeof(interesting_32) >> 2);
+	if (direct_start && ((direct_prob2 == -1) || (direct_prob2 > UR(100)))){
+		stage_max = (int) (stage_max * powscore);
+	}
 
   orig_hit_cnt = new_hit_cnt;
 
@@ -6268,10 +6258,6 @@ skip_arith:
   stage_finds[STAGE_INTEREST32]  += new_hit_cnt - orig_hit_cnt;
   stage_cycles[STAGE_INTEREST32] += stage_max;
 
-	if ((skipdet &&((!direct_start && ((get_cur_time()- last_path_time) >= detSatTimeout))
-				|| (direct_start && ((get_cur_time() - curSatTime) >= satTimeout))))){
-		goto havoc_stage;
-	}
 	
 skip_interest:
 
@@ -6287,6 +6273,9 @@ skip_interest:
   stage_short = "ext_UO";
   stage_cur   = 0;
   stage_max   = extras_cnt * len;
+	if (direct_start && ((direct_prob2 == -1) || (direct_prob2 > UR(100)))){
+		stage_max = (int) (stage_max * powscore);
+	}
 
   stage_val_type = STAGE_VAL_NONE;
 
@@ -6339,16 +6328,16 @@ skip_interest:
   stage_finds[STAGE_EXTRAS_UO]  += new_hit_cnt - orig_hit_cnt;
   stage_cycles[STAGE_EXTRAS_UO] += stage_max;
 
-	if ((skipdet &&((!direct_start && ((get_cur_time()- last_path_time) >= detSatTimeout))
-				|| (direct_start && ((get_cur_time() - curSatTime) >= satTimeout))))){
-		goto havoc_stage;
-	}
   /* Insertion of user-supplied extras. */
 
   stage_name  = "user extras (insert)";
   stage_short = "ext_UI";
   stage_cur   = 0;
   stage_max   = extras_cnt * len;
+	if (direct_start && ((direct_prob2 == -1) || (direct_prob2 > UR(100)))){
+		stage_max = (int) (stage_max * powscore);
+	}
+
 
   orig_hit_cnt = new_hit_cnt;
 
@@ -6392,10 +6381,6 @@ skip_interest:
   stage_finds[STAGE_EXTRAS_UI]  += new_hit_cnt - orig_hit_cnt;
   stage_cycles[STAGE_EXTRAS_UI] += stage_max;
 
-	if ((skipdet &&((!direct_start && ((get_cur_time()- last_path_time) >= detSatTimeout))
-				|| (direct_start && ((get_cur_time() - curSatTime) >= satTimeout))))){
-		goto havoc_stage;
-	}
 
 skip_user_extras:
 
@@ -6405,6 +6390,9 @@ skip_user_extras:
   stage_short = "ext_AO";
   stage_cur   = 0;
   stage_max   = MIN(a_extras_cnt, USE_AUTO_EXTRAS) * len;
+	if (direct_start && ((direct_prob2 == -1) || (direct_prob2 > UR(100)))){
+		stage_max = (int) (stage_max * powscore);
+	}
 
   stage_val_type = STAGE_VAL_NONE;
 
@@ -6473,7 +6461,6 @@ havoc_stage:
     stage_short = "havoc";
     stage_max   = (doing_det ? HAVOC_CYCLES_INIT : HAVOC_CYCLES) *
                   perf_score / havoc_div / 100;
-
   } else {
 
     static u8 tmp[32];
@@ -8173,17 +8160,16 @@ void check_func_file(void){
 		if (num_func_check != num_func){
 				num_func = num_func_check;
 		}
-		/*
 		u8 idx2 = 0;
+		printf("numOf func : %u\n", num_func);
 		for (idx2 = 0; idx2 < num_func; idx2 ++){
 			struct func * tmpfunc = funclist[idx2];
 			printf("func name : %s, #ofnode : %u\n", tmpfunc->name, tmpfunc->numOfNodes);
-			u8 idx3 = 0;
+			u32 idx3 = 0;
 			for (idx3 = 0; idx3 < tmpfunc->numOfNodes; idx3 ++){
-				printf("%u\n", tmpfunc->nodes[idx3]);
+				//printf("%u\n", tmpfunc->nodes[idx3]);
 			}
 		}
-		*/
 	}
 }
 
