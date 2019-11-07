@@ -34,6 +34,13 @@
 
 #define USE_COLOR
 
+#undef REL_FUNC
+
+#define REL_FUNC_THRESHOLD 0.95
+#define REL_CMP_THRESHOLD 0.8
+#define SKIP_THRESHOLD 1.6
+#define TARGET_RUN_TIME 50
+
 /* Comment out to disable fancy ANSI boxes and use poor man's 7-bit UI: */
 
 #define FANCY_BOXES
@@ -315,7 +322,6 @@
 
 #define MAP_SIZE_POW2       16
 #define MAP_SIZE            (1 << MAP_SIZE_POW2)
-#define MAP_ENTIRE_SIZE 		(MAP_SIZE << 1)
 
 /* Maximum allocator request size (keep well under INT_MAX): */
 

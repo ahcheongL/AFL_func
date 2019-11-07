@@ -49,15 +49,21 @@
    is used for instrumentation output before __afl_map_shm() has a chance to run.
    It will end up as .comm, so it shouldn't be too wasteful. */
 
-u8  __afl_area_initial[MAP_ENTIRE_SIZE];
+u8  __afl_area_initial[MAP_SIZE];
 u8* __afl_area_ptr = __afl_area_initial;
 
 __thread u32 __afl_prev_loc;
 
+u8 * __afl_branch_map;
+u32 num_branch; 
 
 /* Running in persistent mode? */
 
 static u8 is_persistent;
+
+void __sw_logger (int cid, long conditon, int numarg, long * args) {
+  return;
+}
 
 
 /* SHM setup. */
@@ -87,7 +93,16 @@ static void __afl_map_shm(void) {
 
   }
 
+  u8 *cond_id_str = getenv("COND_SHM_ID");
+  if (cond_id_str != NULL && num_branch != 0){
+    u32 shm_id = atoi(cond_id_str);
+    __afl_branch_map = shmat(shm_id, NULL, 0);
+  }
+  if (__afl_branch_map == NULL) {
+    __afl_branch_map = (u8*) calloc(num_branch, sizeof(u8));
+  }
 }
+
 
 
 /* Fork server logic. */
@@ -187,7 +202,7 @@ int __afl_persistent_loop(unsigned int max_cnt) {
 
     if (is_persistent) {
 
-      memset(__afl_area_ptr, 0, MAP_ENTIRE_SIZE);
+      memset(__afl_area_ptr, 0, MAP_SIZE);
       __afl_area_ptr[0] = 1;
       __afl_prev_loc = 0;
     }
@@ -246,14 +261,21 @@ void __afl_manual_init(void) {
 
 /* Proper initialization routine. */
 
+//auto init
 __attribute__((constructor(CONST_PRIO))) void __afl_auto_init(void) {
 
   is_persistent = !!getenv(PERSIST_ENV_VAR);
 
   if (getenv(DEFER_ENV_VAR)) return;
 
-  __afl_manual_init();
+  if (getenv("AFL_BRANCH_NUM") != NULL) {
+    num_branch = atoi(getenv("AFL_BRANCH_NUM"));
+  }
 
+  __afl_manual_init();
+  //if (num_branch != 0) {
+  //  __afl_branch_map = (u8 *) calloc(num_branch, sizeof(u8));
+  //}
 }
 
 

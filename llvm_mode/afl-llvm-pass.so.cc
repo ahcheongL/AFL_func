@@ -42,8 +42,6 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Transforms/IPO/PassManagerBuilder.h"
 
-#define NUMNODE 2
-
 using namespace llvm;
 
 namespace {
@@ -53,7 +51,28 @@ namespace {
     public:
 
       static char ID;
+      u32 CidCounter;
+      u32 getInstructionId(Instruction * Inst);
       AFLCoverage() : ModulePass(ID) { }
+      void visitCallInst(Module &M, Instruction *Inst, std::vector<u32> &cmp_list);
+      void visitInvokeInst(Module &M, Instruction *Inst, std::vector<u32> &cmp_list);
+      void visitCompareFunc(Module &M, Instruction *Inst, std::vector<u32> &cmp_list);
+      void visitBranchInst(Module &M, Instruction *Inst, std::vector<u32> &cmp_list);
+      void visitCmpInst(Module &M, Instruction *Inst, std::vector<u32> & cmp_list);
+      void processCmp(Module &M, Instruction *Cond, Constant *Cid, Instruction *InsertPoint);
+      void processBoolCmp(Module &M, Value *Cond, Constant *Cid, Instruction *InsertPoint);
+      void visitSwitchInst(Module &M, Instruction *Inst, std::vector<u32> & cmp_list);
+      void visitExploitation(Instruction *Inst, std::vector<u32> & cmp_list);
+      void processCall(Module &M, Instruction *Inst, std::vector<u32> &cmp_list);
+      GlobalVariable * AFLCondPtr;
+
+      Constant * CmpLogger;
+      Constant * SwLogger;
+
+      IntegerType *Int8Ty ;
+      IntegerType *Int32Ty; 
+      IntegerType *Int64Ty;
+      Type * Int64PtrTy;
 
       bool runOnModule(Module &M) override;
 
@@ -72,9 +91,11 @@ char AFLCoverage::ID = 0;
 bool AFLCoverage::runOnModule(Module &M) {
 
   LLVMContext &C = M.getContext();
-
-  IntegerType *Int8Ty  = IntegerType::getInt8Ty(C);
-  IntegerType *Int32Ty = IntegerType::getInt32Ty(C);
+  Int8Ty  = IntegerType::getInt8Ty(C);
+  Int32Ty = IntegerType::getInt32Ty(C);
+  Int64Ty = IntegerType::getInt64Ty(C);
+  Int64PtrTy = PointerType::getUnqual(Int64Ty);
+  CidCounter = 0;
 
   /* Show a banner */
 
@@ -106,61 +127,47 @@ bool AFLCoverage::runOnModule(Module &M) {
       new GlobalVariable(M, PointerType::get(Int8Ty, 0), false,
                          GlobalValue::ExternalLinkage, 0, "__afl_area_ptr");
 
+ AFLCondPtr =
+      new GlobalVariable(M, PointerType::get(Int8Ty, 0), false,
+                         GlobalValue::ExternalLinkage, 0, "__afl_branch_map");
+
   GlobalVariable *AFLPrevLoc = new GlobalVariable(
       M, Int32Ty, false, GlobalValue::ExternalLinkage, 0, "__afl_prev_loc",
       0, GlobalVariable::GeneralDynamicTLSModel, 0, false);
 
-	char * nodebitmap = (char *) malloc (MAP_SIZE / 8);
-	memset(nodebitmap, 0, MAP_SIZE / 8);
+  Type * VoidTy = Type::getVoidTy(C); 
+
+  //Type *CmpLoggerArgs[2] = {Int32Ty, Int32Ty};
+  //FunctionType * CmpLoggerTy = FunctionType::get(VoidTy, CmpLoggerArgs, false);
+  //CmpLogger = M.getOrInsertFunction("__cmp_logger", CmpLoggerTy);
+
+  Type * SwLoggerArgs[4] = {Int32Ty, Int64Ty, Int32Ty, Int64PtrTy};
+  FunctionType * SwLoggerTy = FunctionType::get(VoidTy, SwLoggerArgs, false);
+  SwLogger = M.getOrInsertFunction("__sw_logger", SwLoggerTy);
+  
+  if (Function *F = dyn_cast<Function>(CmpLogger)) {
+    F->addAttribute(AttributeSet::FunctionIndex, Attribute::NoUnwind);
+    F->addAttribute(AttributeSet::FunctionIndex, Attribute::ReadNone);
+  }
+
 
   /* Instrument all the things! */
 
   int inst_blocks = 0;
 	unsigned int func_idx = 0;
 
-	for (auto &F : M){
-		char bb_exist = 0;
-		for (auto &BB : F){
-			bb_exist ++;
-			(void)BB;
-		}
-		if (bb_exist >= NUMNODE) func_idx++;
-	}
-
-	llvm::Module::IFuncListType & funclist = M.getIFuncList();
-	std::cout << "list of functions : \n";
-	for (auto & F1 : funclist){
-		std::string fnamme = F1.getName();
-		std::cout << fnamme << "\n";
-	}
-
-	unsigned int num_func = func_idx;
-	func_idx = 0;
-
 	//append it all in one file.
-	const std::string & sourcename = M.getSourceFileName();
-	std::string Fname = "FInfo" + sourcename + ".txt";
-	char Fnamech[Fname.size()+1];
-	std::copy(Fname.begin(), Fname.end(), Fnamech);
-	Fnamech[Fname.size()] = 0;
-	int i;
-	for (i = 0; i < Fname.size(); i ++){
-		if (Fnamech[i] == '/'){
-			Fnamech[i] = '-';
-		}
-	}
-	std::ofstream funcinfos;
-	funcinfos.open(Fnamech, std::ofstream::out | std::ofstream::app);
-
-
-	std::cout << "generated " << Fname << " file.\n";
-	funcinfos << num_func << "\n";
+  std::ofstream tmp;
+  std::ofstream func;
+  std::ifstream tmp2;
+  tmp.open("tmp", std::ofstream::out | std::ofstream::trunc);
+  func.open("FInfo-cmp.txt", std::ofstream::out | std::ofstream::trunc);
 
   for (auto &F : M){
 		std::string funcName = F.getName();
 		std::cout << "implementing " << funcName << "\n";
 		std::vector<std::string> blacklist = { "asan.", "llvm.", "sancov.",
-				"free","malloc","calloc","realloc"};
+				"free","malloc","calloc","realloc", "__cmp_logger", "__sw_logger"};
 		std::vector<unsigned int> blocklist = {};
 		unsigned int numBlocks = 0;
 
@@ -171,8 +178,9 @@ bool AFLCoverage::runOnModule(Module &M) {
 				break;
 			}
 		}
-		std::cout << "Function : " << funcName << "\n";
 		if(cont_flag) continue;
+ 
+    std::vector<u32> cmp_list;
 
 		for (auto &BB : F) {
       BasicBlock::iterator IP = BB.getFirstInsertionPt();
@@ -183,13 +191,10 @@ bool AFLCoverage::runOnModule(Module &M) {
       /* Make up cur_loc */
 
       unsigned int cur_loc = AFL_R(MAP_SIZE);
-			std::cout << cur_loc << "\n";
 
-			nodebitmap[cur_loc /8] |= 1 << (cur_loc % 8);
 			blocklist.push_back(cur_loc);
 
       ConstantInt *CurLoc = ConstantInt::get(Int32Ty, cur_loc);
-      ConstantInt *CurBLoc = ConstantInt::get(Int32Ty, cur_loc + MAP_SIZE);
 
       /* Load prev_loc */
 
@@ -212,14 +217,6 @@ bool AFLCoverage::runOnModule(Module &M) {
       IRB.CreateStore(Incr, MapPtrIdx)
           ->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));	
 
-			/* update bitmap for block coverage */
-			Value * MapBPtrIdx = IRB.CreateGEP(MapPtr, CurBLoc);
-			LoadInst * BCounter = IRB.CreateLoad(MapBPtrIdx);
-			BCounter->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C,None));
-			Value *IncrBlock = IRB.CreateAdd(BCounter, ConstantInt::get(Int8Ty, 1));
-			IRB.CreateStore(IncrBlock, MapBPtrIdx)
-					->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
-
       /* Set prev_loc to cur_loc >> 1 */
 
       StoreInst *Store =
@@ -228,32 +225,241 @@ bool AFLCoverage::runOnModule(Module &M) {
 
       inst_blocks++;
 			numBlocks++;
+      
+      std::vector<Instruction *> inst_list;
 
+      for (auto inst = BB.begin(); inst != BB.end(); inst++){
+        Instruction * Inst = &(*inst);
+        inst_list.push_back(Inst);
+      }
+      
+      for (auto inst = inst_list.begin(); inst != inst_list.end(); inst++){
+        Instruction *Inst = *inst;
+
+        if (isa<CallInst>(Inst)) {
+          visitCallInst(M, Inst, cmp_list);
+        } else if (isa<InvokeInst>(Inst)) {
+          visitInvokeInst(M, Inst, cmp_list);
+        } else if (isa<BranchInst>(Inst)) {
+          visitBranchInst(M, Inst, cmp_list);
+        } else if (isa<SwitchInst>(Inst)) {
+          visitSwitchInst(M, Inst, cmp_list);
+        } else if (isa<CmpInst>(Inst)) {
+          visitCmpInst(M, Inst, cmp_list);
+        } else {
+          //visitExploitation(Inst, cmp_list);
+        }
+      }
     }
-		if (numBlocks >= NUMNODE){
-			funcinfos << F.getName().str() << " " << numBlocks << "\n";
-			for (std::vector<unsigned int>::size_type idx = 0;
-							idx < blocklist.size() ; idx++){
-				funcinfos << blocklist[idx] << "\n";
-			}
-			func_idx++;
-		}
+    if (cmp_list.size() > 0) {
+      tmp << cmp_list.size()  << " " << F.getName().str() <<  "\n";
+      func_idx++;
+    }
 	}
 
-	funcinfos.close();
+  tmp.close();
+  tmp2.open("tmp", std::ios::in);
+  func << func_idx << "\n";
+  char buffer[200];
+  while (!tmp2.eof()){
+     tmp2.getline(buffer, 200);
+     func << buffer << "\n";
+  }
+  func.close();
+  tmp2.close();
+  
+  
+
   /* Say something nice. */
 
   if (!be_quiet) {
 
     if (!inst_blocks) WARNF("No instrumentation targets found.");
-    else OKF("Instrumented %u locations (%s mode, ratio %u%%), %u functions.",
+    else OKF("Instrumented %u locations (%s mode, ratio %u%%), %u functions, %u Conds",
              inst_blocks, getenv("AFL_HARDEN") ? "hardened" :
              ((getenv("AFL_USE_ASAN") || getenv("AFL_USE_MSAN")) ?
-              "ASAN/MSAN" : "non-hardened"), inst_ratio, func_idx);
+              "ASAN/MSAN" : "non-hardened"), inst_ratio, func_idx,CidCounter);
 
   }
 
   return true;
+
+}
+
+u32 AFLCoverage::getInstructionId(Instruction * Inst) {
+  return CidCounter++;
+}
+
+void AFLCoverage::visitCallInst(Module &M, Instruction * Inst, std::vector<u32> &cmp_list) {
+  CallInst *Caller = dyn_cast<CallInst>(Inst);
+  Function *Callee = Caller->getCalledFunction();
+  
+  if (!Callee || Callee->isIntrinsic() || isa<InlineAsm>(Caller->getCalledValue())) {
+    return;
+  }
+
+  //processCall(Inst, cmp_list);
+}
+
+void AFLCoverage::visitInvokeInst(Module &M, Instruction *Inst, std::vector<u32> &cmp_list) {
+
+  InvokeInst *Caller = dyn_cast<InvokeInst>(Inst);
+  Function *Callee = Caller->getCalledFunction();
+
+  if (!Callee || Callee->isIntrinsic() ||
+      isa<InlineAsm>(Caller->getCalledValue())) {
+    return;
+  }
+
+  //processCall(Inst, cmp_list);
+}
+
+void AFLCoverage::processCall(Module &M, Instruction *Inst, std::vector<u32> &cmp_list) {
+  //visitCompareFunc(Inst, cmp_list);
+  //visitExploitation(Inst, cmp_list);
+}
+
+void AFLCoverage::visitCompareFunc(Module &M, Instruction *Inst, std::vector<u32> &cmp_list) {
+  //if (!isa<CallInst>(Inst) || !ExploitList.isIn(*Inst, CompareFuncCat)) {
+  //  return;
+  //}
+  u32 iid = getInstructionId(Inst);
+  cmp_list.push_back(iid);
+  //ConstantInt *Cid = ConstantInt::get(Int32Ty, iid);
+
+  CallInst *Caller = dyn_cast<CallInst>(Inst);
+  Value *OpArg[2];
+  OpArg[0] = Caller->getArgOperand(0);
+  OpArg[1] = Caller->getArgOperand(1);
+
+  if (!OpArg[0]->getType()->isPointerTy() ||
+      !OpArg[1]->getType()->isPointerTy()) {
+    return;
+  }
+  IRBuilder<> IRB(Inst);
+  //IRB.CreateCall(TraceFnTT, {Cid});
+}
+
+void AFLCoverage::visitBranchInst(Module &M, Instruction *Inst, std::vector<u32> &cmp_list) {
+  BranchInst *Br = dyn_cast<BranchInst>(Inst);
+  if (Br->isConditional()) {
+    Value *Cond = Br->getCondition();
+    if (Cond && Cond->getType()->isIntegerTy() && !isa<ConstantInt>(Cond)) {
+      if (!isa<CmpInst>(Cond)) {
+        // From  and, or, call, phi ....
+        u32 iid = getInstructionId(Inst);
+        Constant *Cid = ConstantInt::get(Int32Ty, iid);
+        cmp_list.push_back(iid);
+        processBoolCmp(M, Cond, Cid, Inst);
+      }
+    }
+  }
+}
+
+void AFLCoverage::visitSwitchInst(Module &M, Instruction *Inst, std::vector<u32> &cmp_list) {
+
+  SwitchInst *Sw = dyn_cast<SwitchInst>(Inst);
+  Value *Cond = Sw->getCondition();
+
+  if (!(Cond && Cond->getType()->isIntegerTy() && !isa<ConstantInt>(Cond))) {
+    return;
+  }
+
+  int num_bits = Cond->getType()->getScalarSizeInBits();
+  int num_bytes = num_bits / 8;
+  if (num_bytes == 0 || num_bits % 8 > 0)
+    return;
+
+  u32 iid = getInstructionId(Inst);
+  cmp_list.push_back(iid);
+  Constant *Cid = ConstantInt::get(Int32Ty, iid);
+  IRBuilder<> IRB(Sw);
+
+  SmallVector<Constant *, 16> ArgList;
+  for (auto It : Sw->cases()) {
+    Constant *C = It.getCaseValue();
+    if (C->getType()->getScalarSizeInBits() > Int64Ty->getScalarSizeInBits())
+      continue;
+    ArgList.push_back(ConstantExpr::getCast(CastInst::ZExt, C, Int64Ty));
+  }
+
+  ArrayType *ArrayOfInt64Ty = ArrayType::get(Int64Ty, ArgList.size());
+  GlobalVariable *ArgGV = new GlobalVariable(
+      M, ArrayOfInt64Ty, false, GlobalVariable::InternalLinkage,
+      ConstantArray::get(ArrayOfInt64Ty, ArgList),
+      "__AFL_switch_arg_values");
+  Value *SwNum = ConstantInt::get(Int32Ty, ArgList.size());
+  Value *ArrPtr = IRB.CreatePointerCast(ArgGV, Int64PtrTy);
+  Value *CondExt = IRB.CreateZExt(Cond, Int64Ty);
+
+  IRB.CreateCall(
+      SwLogger, {Cid, CondExt, SwNum, ArrPtr});
+}
+
+
+void AFLCoverage::visitCmpInst(Module &M, Instruction *Inst, std::vector<u32> &cmp_list) {
+  Instruction *InsertPoint = Inst->getNextNode();
+  if (!InsertPoint || isa<ConstantInt>(Inst)){
+    return;
+  }
+  u32 iid = getInstructionId(Inst);
+  cmp_list.push_back(iid);
+  Constant *Cid = ConstantInt::get(Int32Ty, iid);
+  processCmp(M, Inst, Cid, InsertPoint);
+}
+
+void AFLCoverage::processCmp(Module &M, Instruction *Cond, Constant *Cid,
+                                Instruction *InsertPoint) {
+  CmpInst *Cmp = dyn_cast<CmpInst>(Cond);
+  Value *OpArg[2];
+  OpArg[0] = Cmp->getOperand(0);
+  OpArg[1] = Cmp->getOperand(1);
+  Type *OpType = OpArg[0]->getType();
+  if (!((OpType->isIntegerTy() && OpType->getIntegerBitWidth() <= 64) ||
+        OpType->isFloatTy() || OpType->isDoubleTy() || OpType->isPointerTy())) {
+    processBoolCmp(M, Cond, Cid, InsertPoint);
+    return;
+  }
+  int num_bytes = OpType->getScalarSizeInBits() / 8;
+  if (num_bytes == 0) {
+    if (OpType->isPointerTy()) {
+      num_bytes = 8;
+    } else {
+      return;
+    }
+  }
+
+  LLVMContext &C = M.getContext();
+
+  IRBuilder<> IRB(InsertPoint);
+  //Value * CondExt = IRB.CreateZExt(Cond, Int32Ty);
+  LoadInst * CondMapPtr = IRB.CreateLoad(AFLCondPtr);
+  CondMapPtr->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
+  Value * CondMapIdx = IRB.CreateGEP(CondMapPtr, Cid);
+  LoadInst * Counter = IRB.CreateLoad(CondMapIdx);
+  Counter->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C,None));
+  Value * newval = IRB.CreateOr(Counter, IRB.CreateAdd(IRB.CreateZExt(Cond, Int32Ty), ConstantInt::get(Int8Ty, 1))); 
+  IRB.CreateStore(newval, CondMapIdx)->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C,None));
+//  IRB.CreateCall(CmpLogger, {Cid, CondExt});
+}
+
+void AFLCoverage::processBoolCmp(Module &M, Value *Cond, Constant *Cid,
+                                    Instruction *InsertPoint) {
+  if (!Cond->getType()->isIntegerTy() ||
+      Cond->getType()->getIntegerBitWidth() > 32)
+    return;
+
+  LLVMContext &C = M.getContext();
+  IRBuilder<> IRB(InsertPoint);
+  //Value * CondExt = IRB.CreateZExt(Cond, Int32Ty);
+//  IRB.CreateCall(CmpLogger, {Cid, CondExt});
+  LoadInst * CondMapPtr = IRB.CreateLoad(AFLCondPtr);
+  CondMapPtr->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
+  Value * CondMapIdx = IRB.CreateGEP(CondMapPtr, Cid);
+  LoadInst * Counter = IRB.CreateLoad(CondMapIdx);
+  Counter->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C,None));
+  Value * newval = IRB.CreateOr(Counter, IRB.CreateAdd(IRB.CreateZExt(Cond, Int32Ty), ConstantInt::get(Int8Ty, 1))); 
+  IRB.CreateStore(newval, CondMapIdx)->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C,None));
 
 }
 

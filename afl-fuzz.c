@@ -81,12 +81,10 @@
 /* Lots of globals, but mostly for the status UI and other things where it
    really makes no sense to haul them around as function parameters. */
 
-u64 totalTimeout = 10 * 60 * 60 * 1000;
+u64 totalTimeout = 24 * 60 * 60 * 1000;
 u64 satTimeout;
 u64 detSatTimeout;
 u64 curSatTime = 0;
-u32 mutTC = 0;
-u32 mutfuncTC = 0;
 double highScore;
 
 EXP_ST u8 *in_dir,                    /* Input directory with test cases  */
@@ -100,7 +98,6 @@ EXP_ST u8 *in_dir,                    /* Input directory with test cases  */
           *target_path,               /* Path to target binary            */
           *orig_cmdline,              /* Original command line            */
 					*func_file;									/* A File of func infos             */
-EXP_ST u8 initial_fuzzing = 0;
 
 EXP_ST u32 exec_tmout = EXEC_TIMEOUT; /* Configurable exec timeout (ms)   */
 static u32 hang_tmout = EXEC_TIMEOUT; /* Timeout used for hang det (ms)   */
@@ -135,6 +132,7 @@ EXP_ST u8  skip_deterministic,        /* Skip deterministic stages?       */
            deferred_mode,             /* Deferred forkserver mode?        */
            fast_cal;                  /* Try to calibrate faster?         */
 
+
 static s32 out_fd,                    /* Persistent fd for out_file       */
            dev_urandom_fd = -1,       /* Persistent fd for /dev/urandom   */
            dev_null_fd = -1,          /* Persistent fd for /dev/null      */
@@ -154,12 +152,12 @@ EXP_ST u8  virgin_bits[MAP_SIZE],     /* Regions yet untouched by fuzzing */
 static u8  var_bytes[MAP_SIZE];       /* Bytes that appear to be variable */
 
 static s32 shm_id;                    /* ID of the SHM region             */
+static s32 shm_cond_id;                    /* ID of the SHM region             */
 
 static volatile u8 stop_soon,         /* Ctrl-C pressed?                  */
                    clear_screen = 1,  /* Window resized?                  */
                    child_timed_out;   /* Traced process timed out?        */
 
-static u8 direct_start = 0;
 static char direct_prob1 = -1;     //prob of taking higher priority queue
 static char direct_prob2 = -1;     //prob of using func. rel. on score 
 static char using_func = 0;
@@ -181,7 +179,6 @@ EXP_ST u32 queued_paths,              /* Total number of queued testcases */
            current_entry,             /* Current queue entry ID           */
 					 current_func_entry,
 					 func_entry_size,
-					 discarded,
            havoc_div = 1;             /* Cycle count divisor for havoc    */
 
 EXP_ST u64 total_crashes,             /* Total number of crashes          */
@@ -237,26 +234,45 @@ static s32 cpu_core_count;            /* CPU core count                   */
 
 // function relevance variables
 struct func {
-	u32 * nodes;
-	u8 * nodecov;
-	u32 numOfNodes;
-	double relevance;
-	double cov;
-	u32 selected;
 	char name[32];
-	u32 maxNumOfCoveredNode;
-	u64 exec;
-	char saturated;
+	u32 num_branch;
+  u32 branch_idx;
 };
 
 char outdir_set = 0;
 
-FILE * valrecfile;
-
 static struct func ** funclist;			/* list of func in the program      */
-static u32 num_func;
+static u32 ** func_exec_table;
+static u8 * func_exec_list;
+static double * func_cov_table;
+static double * func_rel_table;
+static u32 *** cmp_exec_table;
+static u32 * cmp_func_table;
+static u8 * cmp_cov_table;         
+static u8 * cmp_cov_bits;
+static u8 * cmp_rel_table;
+static u32 num_func = 0;
+static u32 num_branch = 0;
+static u8  guiding = 0;
+static u8  target_iter = 0;
+static u8  skip_revive = 0;
+static u32 num_revived = 0;
+static u32 num_done_branch = 0;
+static u32 num_reached_branch = 0;
+static double rel_score = 1.0;
+static u32 num_rel_exec_branch = 0;
+static u32 num_exec_branch = 0;
+static u32 num_exec_func = 0;
+static double sum_exec_rel_func = 0.0;
 
-static u32 target_func;
+static u32 target_func = -1;
+static u32 target_cmp = -1;
+static u32 target_covered = 0;
+static u32 num_rel_func;
+static u32 num_rel_branch;
+#ifdef REL_FUNC
+static double mincov;
+#endif
 // function relevance variables end
 
 #ifdef HAVE_AFFINITY
@@ -292,9 +308,6 @@ struct queue_entry {
 
   u8* trace_mini;                     /* Trace bytes, if kept             */
   u32 tc_ref;                         /* Trace bytes ref count            */
-	double relscore;
-	u32 numOfCoveredNode;
-	u64 numOfExec;
 	u32 selected;
 	u32 discovered;
 
@@ -306,12 +319,8 @@ struct queue_entry {
 
 static struct queue_entry *queue,     /* Fuzzing queue (linked list)      */
                           *queue_cur, /* Current offset within the queue  */
-													*old_queue_cur,
                           *queue_top, /* Top of the list                  */
-                          *q_prev100, /* Previous 100 marker              */
-													*funcqueue, //queue for func-relevance          */
-													*funcqueue_top,
-													*funcqueue_cur;
+                          *q_prev100; /* Previous 100 marker              */
 
 static struct queue_entry*
   top_rated[MAP_SIZE];                /* Top entries for bitmap bytes     */
@@ -829,6 +838,8 @@ static void mark_as_redundant(struct queue_entry* q, u8 state) {
 
 /* Append new test case to the queue. */
 
+static void record_cmp(void);
+
 static void add_to_queue(u8* fname, u32 len, u8 passed_det) {
 
   struct queue_entry* q = ck_alloc(sizeof(struct queue_entry));
@@ -837,13 +848,6 @@ static void add_to_queue(u8* fname, u32 len, u8 passed_det) {
   q->len          = len;
   q->depth        = cur_depth + 1;
   q->passed_det   = passed_det;
-	//cheong - record function call time. based on trace_bits.
-	q->covered_func = ck_alloc(sizeof(u8) * num_func);
-	q->relscore = 0.0;
-	q->numOfExec = 0;
-	q->discovered = 0;
-	q->selected = 0;
-	memset(q->covered_func, 0, sizeof(u8) * num_func);
 
   if (q->depth > max_depth) max_depth = q->depth;
 
@@ -853,6 +857,8 @@ static void add_to_queue(u8* fname, u32 len, u8 passed_det) {
     queue_top = q;
 
   } else q_prev100 = queue = queue_top = q;
+
+  record_cmp();
 
   queued_paths++;
   pending_not_fuzzed++;
@@ -867,6 +873,7 @@ static void add_to_queue(u8* fname, u32 len, u8 passed_det) {
   }
 	
   last_path_time = get_cur_time();
+
 }
 
 
@@ -1263,7 +1270,9 @@ static inline void classify_counts(u32* mem) {
 static void remove_shm(void) {
 
   shmctl(shm_id, IPC_RMID, NULL);
-
+  if (shm_cond_id != 0 ){
+    shmctl(shm_cond_id, IPC_RMID, NULL);
+  }
 }
 
 
@@ -1345,166 +1354,163 @@ static void write_to_testcase(void * mem, u32 len);
 
 static void show_stats(void);
 
+static void record_cmp(){
+  if (func_exec_table == NULL) return;
+  if (cmp_cov_table == NULL ) return;
+  if (cmp_func_table == NULL) return;
+  if (cmp_cov_bits == NULL) return;
+  u32 i,j;
+
+  for (i = 0; i < num_func; i ++){
+    func_exec_list[i] = 0;
+  }
+  if (func_exec_list == NULL) return;
+  for (i = 0; i < num_branch; i ++){
+    cmp_cov_table[i] |= cmp_cov_bits[i];
+    if (cmp_cov_bits[i] != 0) func_exec_list[cmp_func_table[i]] = 1;
+  }
+
+  for (i = 0; i < num_func; i ++){
+    for ( j = 0; j < num_func; j ++){
+      if (func_exec_list[i] & func_exec_list[j])  {
+        func_exec_table[i][j] += 1;
+      }
+    }
+  }
+   
+#ifndef REL_FUNC
+  if (target_cmp != -1) {
+    u8 target_cov = cmp_cov_bits[target_cmp];
+    if ((target_cov & 1) && (target_cov != 1)) {target_covered += 1;}
+  }
+  for ( i = 0; i < num_branch; i ++) {
+    u32 func_idx = cmp_func_table[i];
+    u32 bid = funclist[func_idx] -> branch_idx;
+    for ( j = 0; j < funclist[func_idx] -> num_branch ; j ++){
+      if ((cmp_cov_bits[i] != 0) && (cmp_cov_bits[j + bid] != 0)) {
+        cmp_exec_table[func_idx][i - bid][j] += 1;
+      }
+    }
+  }
+#endif
+} 
+
+
+#ifdef REL_FUNC
+static void select_mincov() {
+  //select target function based on coverage.
+  u32 i,j;
+  mincov = 100.0;
+  for (i = 0; i < num_func; i ++){
+    u32 num_covered = 0;
+    u32 bid = funclist[i] -> branch_idx;
+    u32 func_num_branch = funclist[i] -> num_branch;
+    for (j = bid; j < bid + func_num_branch; j++){
+      u8 cov = cmp_cov_table[j];
+      if (cov & 1 ) {
+        if (cov != 1) {
+          num_covered += 2;
+        } else {
+          num_covered += 1;
+        }
+      } else {
+        if (cov != 0) {
+          num_covered += 1;
+        }
+      }
+    }
+    double cov = ((double) num_covered) / (func_num_branch * 2);
+    func_cov_table[i] = cov;
+    if ((cov != 0.0) && (mincov > cov)) { mincov = cov; target_func = i;}
+  }
+}
+#else
+static void select_branch() {
+  //select a reached but uncovered branch.
+  u32 i;
+  for (i = target_cmp + 1; i < num_branch; i ++){
+    u8 cov = cmp_cov_table[i];
+    if ((cov == 1) || ((cov != 0) && ((cov & 1) != 1))){
+      target_cmp = i;
+      target_func = cmp_func_table[i];
+      return;
+    }
+  }
+  for (i = 0; i < target_cmp; i ++) {
+    u8 cov = cmp_cov_table[i];
+    if ((cov == 1) || ((cov != 0) && ((cov & 1) != 1))){
+      target_cmp = i;
+      target_func = cmp_func_table[i];
+      return;
+    }
+  }
+}
+#endif
+
+#ifdef REL_FUNC
+static void select_rel_func() {
+  u32 target_exec = func_exec_table[target_func][target_func];
+  u32 i,j; 
+  num_rel_func = 0;
+  num_rel_branch = 0;
+  if (target_exec == 0) {guiding = 0; return;}
+  guiding = 1;
+  for (i = 0; i < num_func; i ++){
+    double rel = ((double) func_exec_table[target_func][i]) / target_exec;
+    u32 bid = funclist[i] ->branch_idx;
+    for (j = bid; j < bid + funclist[i]->num_branch; j ++){
+      cmp_rel_table[j] = (rel >= REL_FUNC_THRESHOLD);
+    }
+    num_rel_func += (rel >= REL_FUNC_THRESHOLD);
+    num_rel_branch += (rel >= REL_FUNC_THRESHOLD) * funclist[i]->num_branch;
+  }
+}
+#else
+static void select_rel_branch() {
+  u32 fidx = funclist[target_func] -> branch_idx;
+  u32 target_exec = cmp_exec_table[target_func][target_cmp - fidx][target_cmp - fidx];
+  u32 i;
+  if (target_exec == 0 ) {guiding = 0; return;}
+  guiding = 1;
+  num_rel_branch = 0;
+  num_rel_func = 0; 
+  for (i = 0; i < funclist[target_func] -> num_branch; i ++) {
+    double rel = ((double) cmp_exec_table[target_func][target_cmp - fidx][i]) / target_exec;
+    cmp_rel_table[i + fidx] = (rel >= REL_CMP_THRESHOLD);
+    num_rel_branch += (rel >= REL_CMP_THRESHOLD);
+  }
+  target_exec = func_exec_table[target_func][target_func];
+  for ( i = 0; i < num_func ; i++){
+    double rel = ((double) func_exec_table[target_func][i]) / target_exec;
+    func_rel_table[i] = rel; 
+    num_rel_func += (rel >= REL_FUNC_THRESHOLD);
+  }
+}
+#endif
 /*
 	choose one of function as a target, save the index into global variable target_func.
 	calculate relevance of each function with the target function
 	cheong
 */
-static void select_target(char ** argv){
+static void select_target(){
 	stage_short = "Select target";
 	stage_max = 0;
 	stage_name = "Select target";
-	int i,i2;
-	double mincov = 1.0;
-	double prevcov = 0.0;
-	int selected = 0;
-	u32 prev_target = target_func;
-	for (i = 0; i < num_func; i++){
-		u32 covered_node = 0;
-		for (i2 = 0; i2 < funclist[i]->numOfNodes; i2++){
-			covered_node += funclist[i]->nodecov[i2];
-		}
-		double cov = ((double) covered_node) / ((double)funclist[i]->numOfNodes);
- 		if (mincov > cov 
-				&& funclist[i]->saturated == 0
-				&& cov >= 0.1 && strcmp("main",funclist[i]->name)){
-			mincov = cov;
-			prevcov = funclist[i] -> cov;
-			selected = 1;
-			target_func = i;
-		}
-		funclist[i]-> cov = cov;
-	}
-	if (target_func == -1) target_func = UR(num_func);
-	
-	u64 cur_ms = get_cur_time(); 
-	//reset saturation time
-	if ((selected && target_func != prev_target)
-			|| funclist[target_func] -> cov != prevcov){
-		curSatTime = cur_ms;
-	}
-	if ((cur_ms - curSatTime) >= satTimeout){
-		funclist[target_func]->saturated = 1;
-	}
-	funclist[target_func]-> selected += 1;
-	//reset saturated and increase time.
-	if (!selected){
-		for (i = 0; i < num_func ; i ++){
-			funclist[i] -> saturated = 0;
-		}
-	}
-	if (prev_target != target_func){
-	//compute function relevance to the target function
-		struct queue_entry * q = queue;
-		u32 target_num = 0;
-		while(q){
-			if(q->covered_func[target_func]) target_num++;
-			q = q->next;
-		}
-		for (i = 0; i < num_func; i ++){
-			u32 func_num = 0;
-			if (i == target_func) continue;
-			q = queue;
-			while(q){
-				if (q->covered_func[i] && q->covered_func[target_func]) func_num++;
-				q = q->next;
-			}
-			funclist[i] -> relevance = (double) func_num / target_num;
-		}
-		u32 idx1, idx2;
-		int numOffunc = 0;
-		u32 relidx[5] = {0, 0, 0, 0, target_func};
-		double rel[4] = {0.0, 0.0, 0.0 , 0.0};
-
-		//get top 5 relevant functions
-		for (idx1 = 0; idx1 < num_func; idx1++){
-			double currel = funclist[idx1]->relevance;
-			for (idx2 = 0; idx2 < 4; idx2++){
-				if (currel > rel[idx2] && strcmp("main", funclist[idx1]->name)){
-					rel[idx2] = currel;
-					relidx[idx2] = idx1;
-					numOffunc = (idx2 > numOffunc) ? (idx2+1) : numOffunc;
-					break;
-				}
-			}
-		}
-
-		relidx[numOffunc] = target_func;
-
-		//Compute score for all testcase
-		q = queue;
-		while (q) {
-			u32 j = MAP_SIZE;
-			u32 fd,len;
-			u32 numOfCoveredNodes = 0;
-			u32 numOfCoveredFuncNodes = 0;
-			u8 pass = 0;
-			u8 * out_buf;
-
-			fd = open(q ->fname, O_RDONLY);
-			if (fd < 0) PFATAL("Unable to open '%s'", q->fname);
-			len = q->len;
-			out_buf = mmap(0, len, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 0);
-			close(fd);
-		
-			//execute the test case;
-			if (out_buf != NULL){
-				write_to_testcase(out_buf, len);
-				run_target(argv, exec_tmout);
-				rel_execs ++;
-			}
-			munmap(out_buf,len);
-			//get number of nodes covered
-			while (j--){
-				if (trace_bits[j]){
-					numOfCoveredNodes++;
-					for (idx1 = 0; idx1 < numOffunc + 1; idx1++){
-						if(pass){ pass = 0; break;}
-						for (idx2 = 0; idx2 < funclist[relidx[idx1]]->numOfNodes; idx2++){
-							if (funclist[relidx[idx1]]->nodes[idx2] == j){
-								numOfCoveredFuncNodes ++;
-								pass = 1;
-								break;
-							}
-						}
-					}
-				}
-			}
-			if (numOfCoveredFuncNodes > funclist[target_func]->maxNumOfCoveredNode){
-				funclist[target_func] -> maxNumOfCoveredNode = numOfCoveredFuncNodes;
-			}
-			q -> numOfCoveredNode = numOfCoveredFuncNodes;
-			q = q-> next;
-		}
-		if (funcqueue_cur != NULL)
-			{discarded += func_entry_size - current_func_entry;}
-		q = queue_cur;
-		funcqueue_cur = NULL;
-		funcqueue_top = NULL;
-		func_entry_size = 0;
-		current_func_entry = 0;
-		while(q){
-			q -> relscore = (double) q -> numOfCoveredNode
-												/ funclist[target_func] -> maxNumOfCoveredNode;
-			if ( q->relscore > highScore && direct_start){
-				q->selected ++;
-				func_entry_size ++;
-				if (funcqueue_cur == NULL){
-					funcqueue = q;
-					funcqueue_cur = q;
-					funcqueue_cur -> funcnext = NULL;
-				} else {
-					funcqueue_cur -> funcnext = q;
-					funcqueue_cur = q;
-					q -> funcnext = NULL;
-				}
-			}
-			q = q->next;
-			if (func_entry_size > 100) {  break;}
-		}
-		funcqueue_top = funcqueue_cur;
-		funcqueue_cur = funcqueue;
-	}
+  
+  //either one of these
+#ifdef REL_FUNC
+  select_mincov();
+#else
+  select_branch();
+#endif
+  if (target_func == -1) return;
+  
+  //select one of these
+#ifdef REL_FUND
+  select_rel_func();
+#else
+  select_rel_branch();
+#endif
 }
 
 /* The second part of the mechanism discussed above is a routine that
@@ -1576,7 +1582,7 @@ EXP_ST void setup_shm(void) {
   memset(virgin_tmout, 255, MAP_SIZE);
   memset(virgin_crash, 255, MAP_SIZE);
 
-  shm_id = shmget(IPC_PRIVATE, MAP_ENTIRE_SIZE , IPC_CREAT | IPC_EXCL | 0600);
+  shm_id = shmget(IPC_PRIVATE, MAP_SIZE , IPC_CREAT | IPC_EXCL | 0600);
 
   if (shm_id < 0) PFATAL("shmget() failed");
 
@@ -1597,6 +1603,16 @@ EXP_ST void setup_shm(void) {
   
   if (!trace_bits) PFATAL("shmat() failed");
 
+  if (func_file) {
+    shm_cond_id = shmget(IPC_PRIVATE, sizeof(u8) * num_branch, IPC_CREAT | IPC_EXCL | 0600);
+    if (shm_cond_id < 0) PFATAL("shm_cond_id failed");
+    
+    u8* cond_shm_str = alloc_printf("%d", shm_cond_id);
+    setenv("COND_SHM_ID", cond_shm_str, 1);
+    ck_free(cond_shm_str);
+    cmp_cov_bits = shmat(shm_cond_id, NULL, 0);    
+    if (cmp_cov_bits < 0) PFATAL("shm_cov shmat() failed");
+  }
 }
 
 
@@ -2501,6 +2517,7 @@ static u8 run_target(char** argv, u32 timeout) {
      territory. */
 
   memset(trace_bits, 0, MAP_SIZE);
+  memset(cmp_cov_bits, 0, sizeof(u8) * num_branch);
   MEM_BARRIER();
 
   /* If we're running in "dumb" mode, we can't rely on the fork server
@@ -2644,9 +2661,6 @@ static u8 run_target(char** argv, u32 timeout) {
   setitimer(ITIMER_REAL, &it, NULL);
 
   total_execs++;
-
-	if (queue_cur) queue_cur->numOfExec ++;
-	if (direct_start) funclist[target_func]->exec ++;
 
   /* Any subsequent operations on trace_bits must not be moved by the
      compiler below this point. Past this location, trace_bits[] behave
@@ -2804,21 +2818,6 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
     write_to_testcase(use_mem, q->len);
 
     fault = run_target(argv, use_tmout);
-
-		//record node cov - cheong
-		u32 i;
-			if (trace_bits){
-			for (i = 0; i < num_func; i++){
-				u32 nON = funclist[i] -> numOfNodes;
-				u32 i2 = 0;
-				for (i2 = 0; i2 < nON ; i2 ++){
-					if (trace_bits[MAP_SIZE + funclist[i]->nodes[i2]]){
-						q->covered_func[i] = 1;
-						funclist[i]->nodecov[i2] = 1;
-					}
-				}
-			}
-		}
 
     /* stop_soon is set by the handler for Ctrl+C. When it's pressed,
        we want to bail out quickly. */
@@ -3680,8 +3679,7 @@ static void write_stats_file(double bitmap_cvg, double stability, double eps) {
              "afl_banner        : %s\n"
              "afl_version       : " VERSION "\n"
              "target_mode       : %s%s%s%s%s%s%s\n"
-             "command_line      : %s\n"
-						 "# of mutated func TC : %u / %u\n",
+             "command_line      : %s\n",
              start_time / 1000, get_cur_time() / 1000, getpid(),
              queue_cycle ? (queue_cycle - 1) : 0, total_execs, rel_execs,
 						 stage_cycles[STAGE_HAVOC] + stage_cycles[STAGE_SPLICE], eps,
@@ -3696,7 +3694,7 @@ static void write_stats_file(double bitmap_cvg, double stability, double eps) {
              persistent_mode ? "persistent " : "", deferred_mode ? "deferred " : "",
              (qemu_mode || dumb_mode || no_forkserver || crash_mode ||
               persistent_mode || deferred_mode) ? "" : "default",
-             orig_cmdline, mutfuncTC, mutTC);
+             orig_cmdline);
 
 	 fclose(f);
 
@@ -3798,7 +3796,7 @@ static double get_runnable_processes(void) {
   u8 tmp[1024];
   u32 val = 0;
 
-  if (!f) return 0;
+  if (f == NULL) return 0;
 
   while (fgets(tmp, sizeof(tmp), f)) {
 
@@ -4086,7 +4084,7 @@ static void maybe_delete_out_dir(void) {
     ck_free(fn);
   }
 
-  fn = alloc_printf("%s/plot_data", out_dir);
+  fn = alloc_printf("%s/plot_data.csv", out_dir);
   if (unlink(fn) && errno != ENOENT) goto dir_cleanup_failed;
   ck_free(fn);
 
@@ -4114,24 +4112,18 @@ dir_cleanup_failed:
 
 static void check_term_size(void);
 
-static void record_relevance(void);
-static void record_score(void);
-static void record_cov (u64);
-
 /* A spiffy retro stats screen! This is called every stats_update_freq
    execve() calls, plus in several other circumstances. */
 
 static void show_stats(void) {
 
   static u64 last_stats_ms, last_plot_ms, last_ms, last_execs;
-	static u64 last_rec_ms;
   static double avg_exec;
-	static u64 record_hour = 0;
-	static u64 record_m = 0;
   double t_byte_ratio, stab_ratio;
 
   u64 cur_ms;
   u32 t_bytes, t_bits;
+  u32 i;
 
   u32 banner_len, banner_pad;
   u8  tmp[256];
@@ -4140,25 +4132,6 @@ static void show_stats(void) {
 
 	//cheong
 	u64 tmpdelta = cur_ms - start_time;
-	u64 tmp_h = tmpdelta / 1000 / 60 / 60;
-	u64 tmp_m = tmpdelta / 1000 / 60;
-	if ((initial_fuzzing == 2) && !direct_start && (tmpdelta >= (totalTimeout/10))){
-		direct_start = 1;
-	}
-	if (record_hour < tmp_h) record_hour = tmp_h;
-
-	if (tmp_h >= record_hour && outdir_set && direct_start){
-		record_relevance();
-		record_hour ++;
-	}
-
-	if (record_m  < tmp_m) record_m = tmp_m;
-
-	if (tmp_m >= record_m && outdir_set){
-		record_score();
-		record_cov(tmp_m);
-		record_m += 1;
-	}
 
 	if (tmpdelta >= totalTimeout){ //timeout, terminate
 		stop_soon = 1;
@@ -4194,25 +4167,20 @@ static void show_stats(void) {
 
   }
 
+  num_done_branch = 0;
+  num_reached_branch = 0;
+  for (i = 0; i < num_branch; i ++){
+    u8 cov = cmp_cov_table[i];
+    if (cov & 1) {
+      if (cov != 1) num_done_branch +=1;
+      else num_reached_branch +=1;
+    } else{
+      if (cov != 0) num_reached_branch +=1;
+    }
+  }
+
   last_ms = cur_ms;
   last_execs = total_execs;
-
-	//cheong - rec unqi paths, #exec.
-	if (cur_ms - last_rec_ms > 60 * 1000){
-		if (valrecfile != NULL){
-			if (funclist != NULL && funclist[target_func] != NULL){
-				fprintf(valrecfile, "%llu,%u,%s,%lf,%u,%u,%u\n",
-						 (cur_ms - start_time) / 1000 / 60,
-						 queued_paths, funclist[target_func]->name,
-						 funclist[target_func]->cov,  current_entry, func_entry_size,discarded);
-			} else {
-				fprintf(valrecfile, "%llu,%u,NONE,%u,%u,%u\n",
-						 (cur_ms - start_time) / 1000 / 60,
-						 queued_paths, current_entry,func_entry_size,discarded);
-			}
-			last_rec_ms = cur_ms;
-		}
-	}
 
   /* Tell the callers when to contact us (as measured in execs). */
 
@@ -4397,8 +4365,8 @@ static void show_stats(void) {
 		sprintf(tmp, "func - %u (%0.02f%%)", current_func_entry,
           ((double)current_func_entry * 100) / func_entry_size);
 	} else {
-  	sprintf(tmp, "%s%s (%0.02f%%)", DI(current_entry),
-          queue_cur->favored ? "" : "*",
+  	sprintf(tmp, "%s%s%s (%0.02f%%)", DI(current_entry),
+          queue_cur->favored ? "" : "*", skip_revive ? "f" : "",
           ((double)current_entry * 100) / queued_paths);
 	}
   SAYF(bV bSTOP "  now processing : " cRST "%-17s " bSTG bV bSTOP, tmp);
@@ -4485,29 +4453,6 @@ static void show_stats(void) {
           (unique_hangs >= KEEP_UNIQUE_HANG) ? "+" : "");
 
   SAYF (bSTG bV bSTOP "  total tmouts : " cRST "%-22s " bSTG bV "\n", tmp);
-
-	//cheong
-	if (!direct_start){
-		sprintf(tmp, "Directing is not started yet!");
-		SAYF(bVR bH cCYA bSTOP "%-50s" bSTG bV "\n", tmp);
-	}
-	sprintf(tmp, "%s, cov : %lf, selected : %u", funclist[target_func] -> name,
-						funclist[target_func] -> cov, funclist[target_func] -> selected);
-	SAYF(bV bSTOP "  current target function : " cRST "%-50s" bSTG bV "\n", tmp);
-
-	sprintf(tmp, "%lf", queue_cur ->relscore );
-	SAYF(bV bSTOP "  current test case score : " cRST "%-50s" bSTG bV "\n", tmp);
-
-	if (direct_start){
-		sprintf(tmp, "%s", DTD(cur_ms, curSatTime));
-		SAYF(bV bSTOP "curSatTime : " cRST " %-50s" bSTG bV "\n", tmp); 
-	}
-
-	sprintf(tmp, "%u/%u (%0.02f%%)", mutfuncTC, mutTC, (float) mutfuncTC / mutTC*100);
-	SAYF(bV bSTOP "# of mutated TC (func/all) : " cRST " %-50s" bSTG bV "\n", tmp);
-
-	sprintf(tmp, "%lf", highScore);
-	SAYF(bV bSTOP "score threashold : " cRST " %-50s" bSTG bV "\n", tmp);
 
   /* Aaaalmost there... hold on! */
 
@@ -4611,8 +4556,28 @@ static void show_stats(void) {
 
   }
 
-  SAYF(bV bSTOP "        trim : " cRST "%-37s " bSTG bVR bH20 bH2 bH2 bRB "\n"
-       bLB bH30 bH20 bH2 bH bRB bSTOP cRST RESET_G1, tmp);
+  SAYF(bV bSTOP "        trim : " cRST "%-37s " bSTG bVR bH20 bH2 bH2 bV "\n", tmp);
+
+  SAYF(bV bSTOP " total/done/reached cmp: " );
+  sprintf(tmp,"%5u/%5u/%5u           ",num_branch, num_done_branch, num_reached_branch);
+  SAYF(cRST "%s" bSTG bVR bH20 bH2 bH2 bV "\n", tmp);
+
+  if (target_cmp != -1){
+#ifdef REL_FUNC
+  SAYF(bV bSTOP cGRA " rel / all :" cRST " %3u/%5u" cGRA ", target b/f: " cRST "%3u(%5.2f%), %4.3f"
+        ,num_rel_exec_branch, num_rel_branch, target_func, mincov * 100, rel_score);
+  SAYF(cGRA ", # of rel func : " cRST "%5u  " cRGA bRB "\n", num_rel_func);
+#else
+  SAYF(bV bSTOP cGRA " rel / all :" cRST " %3u/%5u" cGRA " target b/f: " cRST "%5u,%4u, %4.3f"
+        ,num_rel_exec_branch, num_rel_branch, target_cmp, target_func, rel_score);
+  SAYF(cGRA " # of rel func : " cRST "%5u  " cGRA bRB "\n" , num_rel_func);
+  SAYF(bV bSTOP " func rel / all : " cRST "%4.1f/%3u", sum_exec_rel_func, num_exec_func);
+  SAYF(cGRA " target_success : " cRST "%2u", target_covered);
+  SAYF(cGRA " revived : " cRST "%5u  " cGRA bRB "\n", num_revived);
+#endif
+  }
+   
+  SAYF(cGRA bLB bH30 bH20 bH2 bH bRB bSTOP cRST RESET_G1);
 
   /* Provide some CPU utilization stats. */
 
@@ -4655,6 +4620,7 @@ static void show_stats(void) {
 #endif /* ^HAVE_AFFINITY */
 
   } else SAYF("\r");
+
 
   /* Hallelujah! */
 
@@ -5004,6 +4970,32 @@ static u32 choose_block_len(u32 limit) {
 
 }
 
+static double calculate_relscore() {
+  u32 i;
+  num_exec_branch = 0;
+  num_rel_exec_branch = 0;
+  u32 bid = funclist[target_func] -> branch_idx;
+  for (i = bid; i < bid + funclist[target_func] -> num_branch; i++){
+    if (cmp_cov_bits[i]) {
+      num_exec_branch++;
+      if (cmp_rel_table[i]){
+         num_rel_exec_branch++;
+      }
+    }
+  }
+  num_exec_func = 0;
+  sum_exec_rel_func = 0.0;
+  for (i = 0; i < num_func; i ++) {
+    if (func_exec_list[i]) {
+      num_exec_func ++;
+      sum_exec_rel_func += (func_rel_table[i] > REL_FUNC_THRESHOLD) ? func_rel_table[i] : 0.0;
+    } 
+  }
+
+  //if (num_exec_branch == 0) return sum_exec_rel_func / num_exec_func;
+  return (((double) num_rel_exec_branch)/ num_rel_branch) + sum_exec_rel_func / num_exec_func;
+  //return pow(2.0, (((double) num_rel_exec_branch) / num_exec_branch) - 0.5) ;
+}
 
 /* Calculate case desirability score to adjust the length of havoc fuzzing.
    A helper function for fuzz_one(). Maybe some of these constants should
@@ -5067,12 +5059,7 @@ static u32 calculate_score(struct queue_entry* q) {
 
   }
 
-	if (direct_start && ((direct_prob2 == -1) || (direct_prob2 > UR(100)))) {
-		double powscore = pow(2.0, 10.0 * (q -> relscore - 0.5));
-		perf_score *= (powscore >= 1.0) ? powscore : 1.0;
-	}
   /* Make sure that we don't go over limit. */
-
   if (perf_score > HAVOC_MAX_MULT * 100) perf_score = HAVOC_MAX_MULT * 100;
 
   return perf_score;
@@ -5280,14 +5267,9 @@ static u8 fuzz_one(char** argv) {
   u8  ret_val = 1, doing_det = 0;
   u8  a_collect[MAX_AUTO_EXTRA];
   u32 a_len = 0;
+  u8 skip  = 0;
+  skip_revive = 0;
 	
-	double powscore = pow(2.0, 10.0 * (queue_cur -> relscore - 1.0));
-	
-	if (funcqueue_cur != NULL && ((direct_prob1 == -1) || (direct_prob1 > UR(100)))){
-		old_queue_cur = queue_cur;
-		queue_cur = funcqueue_cur;
-		using_func = 1;
-	}
 #ifdef IGNORE_FINDS
 
   /* In IGNORE_FINDS mode, skip any entries that weren't in the
@@ -5304,9 +5286,9 @@ static u8 fuzz_one(char** argv) {
        cases. */
 
     if ((queue_cur->was_fuzzed || !queue_cur->favored) &&
-        UR(100) < SKIP_TO_NEW_PROB) return 1;
+        UR(100) < SKIP_TO_NEW_PROB) skip = 1;
 
-  } else if (!dumb_mode && !queue_cur->favored && queued_paths > 10) {
+    } else if (!dumb_mode && !queue_cur->favored && queued_paths > 10) {
 
     /* Otherwise, still possibly skip non-favored cases, albeit less often.
        The odds of skipping stuff are higher for already-fuzzed inputs and
@@ -5314,11 +5296,11 @@ static u8 fuzz_one(char** argv) {
 
     if (queue_cycle > 1 && !queue_cur->was_fuzzed) {
 
-      if (UR(100) < SKIP_NFAV_NEW_PROB) return 1;
+      if (UR(100) < SKIP_NFAV_NEW_PROB) skip = 1;
 
     } else {
 
-      if (UR(100) < SKIP_NFAV_OLD_PROB) return 1;
+      if (UR(100) < SKIP_NFAV_OLD_PROB) skip = 1;
 
     }
 
@@ -5406,14 +5388,18 @@ static u8 fuzz_one(char** argv) {
 
   memcpy(out_buf, in_buf, len);
 
+  if (skip) {
+    if (common_fuzz_stuff(argv, out_buf, len)) goto abandon_entry;
+    rel_score = guiding ? calculate_relscore() : 1.0;
+    //if (!((target_cmp != -1) && cmp_cov_bits[target_cmp])) return 1;
+    if (rel_score < SKIP_THRESHOLD) goto abandon_entry;
+    skip_revive = 1;
+    num_revived += 1;
+  }
+  target_iter++;
   /*********************
    * PERFORMANCE SCORE *
    *********************/
-
-
-	if (using_func) mutfuncTC++;
-	mutTC ++;
-
   orig_perf = perf_score = calculate_score(queue_cur);
 
   /* Skip right away if -d is given, if we have done deterministic fuzzing on
@@ -5446,9 +5432,6 @@ static u8 fuzz_one(char** argv) {
 
   stage_short = "flip1";
   stage_max   = len << 3;
-	if (direct_start && ((direct_prob2 == -1) || (direct_prob2 > UR(100)))){
-		stage_max = (int) (stage_max * powscore);
-	}
   stage_name  = "bitflip 1/1";
 
   stage_val_type = STAGE_VAL_NONE;
@@ -5546,9 +5529,6 @@ static u8 fuzz_one(char** argv) {
   stage_name  = "bitflip 2/1";
   stage_short = "flip2";
   stage_max   = (len << 3) - 1;
- if (direct_start && ((direct_prob2 == -1) || (direct_prob2 > UR(100)))){
-		stage_max = (int) (stage_max * powscore);
-	}
   orig_hit_cnt = new_hit_cnt;
 
   for (stage_cur = 0; stage_cur < stage_max; stage_cur++) {
@@ -5576,9 +5556,6 @@ static u8 fuzz_one(char** argv) {
   stage_name  = "bitflip 4/1";
   stage_short = "flip4";
   stage_max   = (len << 3) - 3;
-if (direct_start && ((direct_prob2 == -1) || (direct_prob2 > UR(100)))){
-		stage_max = (int) (stage_max * powscore);
-	}
 
   orig_hit_cnt = new_hit_cnt;
 
@@ -5635,9 +5612,6 @@ if (direct_start && ((direct_prob2 == -1) || (direct_prob2 > UR(100)))){
   stage_name  = "bitflip 8/8";
   stage_short = "flip8";
   stage_max   = len;
-if (direct_start && ((direct_prob2 == -1) || (direct_prob2 > UR(100)))){
-		stage_max = (int) (stage_max * powscore);
-	}
 
   orig_hit_cnt = new_hit_cnt;
 
@@ -5710,9 +5684,6 @@ if (direct_start && ((direct_prob2 == -1) || (direct_prob2 > UR(100)))){
   stage_short = "flip16";
   stage_cur   = 0;
   stage_max   = len - 1;
-	if (direct_start && ((direct_prob2 == -1) || (direct_prob2 > UR(100)))){
-		stage_max = (int) (stage_max * powscore);
-	}
 
   orig_hit_cnt = new_hit_cnt;
 
@@ -5751,9 +5722,6 @@ if (direct_start && ((direct_prob2 == -1) || (direct_prob2 > UR(100)))){
   stage_short = "flip32";
   stage_cur   = 0;
   stage_max   = len - 3;
-	if (direct_start && ((direct_prob2 == -1) || (direct_prob2 > UR(100)))){
-		stage_max = (int) (stage_max * powscore);
-	}
 
   orig_hit_cnt = new_hit_cnt;
 
@@ -5797,9 +5765,6 @@ skip_bitflip:
   stage_short = "arith8";
   stage_cur   = 0;
   stage_max   = 2 * len * ARITH_MAX;
-	if (direct_start && ((direct_prob2 == -1) || (direct_prob2 > UR(100)))){
-		stage_max = (int) (stage_max * powscore);
-	}
 
   stage_val_type = STAGE_VAL_LE;
 
@@ -5868,9 +5833,6 @@ skip_bitflip:
   stage_short = "arith16";
   stage_cur   = 0;
   stage_max   = 4 * (len - 1) * ARITH_MAX;
-	if (direct_start && ((direct_prob2 == -1) || (direct_prob2 > UR(100)))){
-		stage_max = (int) (stage_max * powscore);
-	}
 
   orig_hit_cnt = new_hit_cnt;
 
@@ -5965,9 +5927,6 @@ skip_bitflip:
   stage_short = "arith32";
   stage_cur   = 0;
   stage_max   = 4 * (len - 3) * ARITH_MAX;
-	if (direct_start && ((direct_prob2 == -1) || (direct_prob2 > UR(100)))){
-		stage_max = (int) (stage_max * powscore);
-	}
 
   orig_hit_cnt = new_hit_cnt;
 
@@ -6063,9 +6022,6 @@ skip_arith:
   stage_short = "int8";
   stage_cur   = 0;
   stage_max   = len * sizeof(interesting_8);
-	if (direct_start && ((direct_prob2 == -1) || (direct_prob2 > UR(100)))){
-		stage_max = (int) (stage_max * powscore);
-	}
 
   stage_val_type = STAGE_VAL_LE;
 
@@ -6122,9 +6078,6 @@ skip_arith:
   stage_short = "int16";
   stage_cur   = 0;
   stage_max   = 2 * (len - 1) * (sizeof(interesting_16) >> 1);
-	if (direct_start && ((direct_prob2 == -1) || (direct_prob2 > UR(100)))){
-		stage_max = (int) (stage_max * powscore);
-	}
 
   orig_hit_cnt = new_hit_cnt;
 
@@ -6194,9 +6147,6 @@ skip_arith:
   stage_short = "int32";
   stage_cur   = 0;
   stage_max   = 2 * (len - 3) * (sizeof(interesting_32) >> 2);
-	if (direct_start && ((direct_prob2 == -1) || (direct_prob2 > UR(100)))){
-		stage_max = (int) (stage_max * powscore);
-	}
 
   orig_hit_cnt = new_hit_cnt;
 
@@ -6273,9 +6223,6 @@ skip_interest:
   stage_short = "ext_UO";
   stage_cur   = 0;
   stage_max   = extras_cnt * len;
-	if (direct_start && ((direct_prob2 == -1) || (direct_prob2 > UR(100)))){
-		stage_max = (int) (stage_max * powscore);
-	}
 
   stage_val_type = STAGE_VAL_NONE;
 
@@ -6334,9 +6281,6 @@ skip_interest:
   stage_short = "ext_UI";
   stage_cur   = 0;
   stage_max   = extras_cnt * len;
-	if (direct_start && ((direct_prob2 == -1) || (direct_prob2 > UR(100)))){
-		stage_max = (int) (stage_max * powscore);
-	}
 
 
   orig_hit_cnt = new_hit_cnt;
@@ -6390,9 +6334,6 @@ skip_user_extras:
   stage_short = "ext_AO";
   stage_cur   = 0;
   stage_max   = MIN(a_extras_cnt, USE_AUTO_EXTRAS) * len;
-	if (direct_start && ((direct_prob2 == -1) || (direct_prob2 > UR(100)))){
-		stage_max = (int) (stage_max * powscore);
-	}
 
   stage_val_type = STAGE_VAL_NONE;
 
@@ -6454,6 +6395,11 @@ havoc_stage:
 
   /* The havoc stage mutation code is also invoked when splicing files; if the
      splice_cycle variable is set, generate different descriptions and such. */
+  
+  if (!skip) {
+    if (common_fuzz_stuff(argv, out_buf, len)) goto abandon_entry;
+    rel_score = guiding ? calculate_relscore() : 1.0;
+  }
 
   if (!splice_cycle) {
 
@@ -6475,6 +6421,8 @@ havoc_stage:
   }
 
   if (stage_max < HAVOC_MIN) stage_max = HAVOC_MIN;
+  
+  stage_max = stage_max * rel_score;
 
   temp_len = len;
 
@@ -6858,11 +6806,8 @@ havoc_stage:
             temp_len += extra_len;
 
             break;
-
           }
-
       }
-
     }
 
     if (common_fuzz_stuff(argv, out_buf, temp_len))
@@ -7550,15 +7495,6 @@ EXP_ST void setup_dirs_fds(void) {
   if (mkdir(tmp, 0700)) PFATAL("Unable to create '%s'", tmp);
   ck_free(tmp);
 
-	//generate dir for recording function metrics. - cheong
-	tmp = alloc_printf("%s/score/", out_dir);
-	if (mkdir(tmp, 0700)) PFATAL("Unable to create '%s'", tmp);
-	ck_free(tmp);
-
-	tmp = alloc_printf("%s/relevance/", out_dir);
-	if (mkdir(tmp, 0700)) PFATAL("Unable to create '%s'", tmp);
-	ck_free(tmp);
-
   /* Sync directory for keeping track of cooperating fuzzers. */
   if (sync_id) {
 
@@ -7593,7 +7529,7 @@ EXP_ST void setup_dirs_fds(void) {
 
   /* Gnuplot output file. */
 
-  tmp = alloc_printf("%s/plot_data", out_dir);
+  tmp = alloc_printf("%s/plot_data.csv", out_dir);
   fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL, 0600);
   if (fd < 0) PFATAL("Unable to create '%s'", tmp);
   ck_free(tmp);
@@ -7601,10 +7537,14 @@ EXP_ST void setup_dirs_fds(void) {
   plot_file = fdopen(fd, "w");
   if (!plot_file) PFATAL("fdopen() failed");
 
-  fprintf(plot_file, "# unix_time, cycles_done, cur_path, paths_total, "
+  fprintf(plot_file, "unix_time, cycles_done, cur_path, paths_total, "
                      "pending_total, pending_favs, map_size, unique_crashes, "
                      "unique_hangs, max_depth, execs_per_sec\n");
                      /* ignore errors */
+
+  tmp = alloc_printf("%s/func_rel", out_dir);
+  if(mkdir(tmp, 0700)) PFATAL("Unable to create '%s'", tmp);
+  ck_free(tmp);
 
 }
 
@@ -7961,19 +7901,10 @@ EXP_ST void detect_file_args(char** argv) {
 
 }
 
+void record_func(){
 //cheong
-void record_init(){
-	u8* fn = alloc_printf("%s/minuate_rec.csv", out_dir);
-	valrecfile = fopen(fn, "w");	
-	if (valrecfile == NULL) PFATAL("Unable to open '%s'", fn);
-	fprintf(valrecfile,"min,uniq paths,current target func,cov, current test case, cur_func_entry_size,# of discarded\n");
-	ck_free(fn);
-}
-
-void record_func_cov(){
-//cheong
-	int idxx;
-  u8* fn = alloc_printf("%s/func_cov.csv", out_dir);
+	u32 idxx, idxx2;
+  u8* fn = alloc_printf("%s/func_rel/cmp_cov.csv", out_dir);
   s32 fd;
   FILE* f;
 
@@ -7984,99 +7915,57 @@ void record_func_cov(){
 
   f = fdopen(fd, "w");
 
-	fprintf(f, "name,cov,# of nodes, selected\n");
-	for (idxx = 0; idxx < num_func; idxx++){
-		fprintf(f, "%s,%lf,%u,%u\n",
-						funclist[idxx] -> name,
-						funclist[idxx] -> cov,
-						funclist[idxx] -> numOfNodes,
-						funclist[idxx] -> selected);
-		//free(funclist[idxx]->nodes);
-		//free(funclist[idxx]->nodecov);
-		//free(funclist[idxx]);
+	fprintf(f, "cmp_id, covered\n");
+	for (idxx = 0; idxx < num_branch; idxx++){
+		fprintf(f, "%u,%u\n", idxx, cmp_cov_table[idxx]);
 	}
-	//free(funclist);
 	fclose(f);
+
+  fn = alloc_printf("%s/func_rel/func_exec_table.csv", out_dir);
+  fd = open(fn, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+  if (fd < 0) PFATAL("Unable to create '%s'", fn);
+  ck_free(fn);
+  
+  f = fdopen(fd, "w");
+  fprintf(f, ",");
+  for (idxx = 0; idxx < num_func; idxx++){
+    fprintf(f, "%s,", funclist[idxx]-> name);
+  }
+  fprintf(f,"\n");
+  for (idxx = 0; idxx < num_func; idxx++){
+    fprintf(f, "%s,", funclist[idxx]-> name);
+    for (idxx2 = 0; idxx2 < num_func ; idxx2++){
+      fprintf(f, "%u,", func_exec_table[idxx][idxx2]);
+    }
+    fprintf(f, "\n");
+  }
+  fclose(f);
+
+  fn = alloc_printf("%s/func_rel/cmp_rel_table.csv", out_dir);
+  fd = open(fn, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+  if (fd < 0) PFATAL("Unable to create '%s'", fn);
+  ck_free(fn);
+  f = fdopen(fd, "w");
+  for (idxx = 0; idxx < num_branch; idxx++){
+    fprintf(f, "%u,", cmp_func_table[idxx]);
+  }
+  fprintf(f,"\n");
+  for (idxx = 0; idxx < num_branch; idxx++){
+    fprintf(f, "%u,", cmp_rel_table[idxx]);
+  }
+  fclose(f);
+
+  fn = alloc_printf("%s/func_rel/func_cov.csv" , out_dir);
+  fd = open(fn, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+  if (fd < 0) PFATAL("Unagle to create '%s'", fn);
+  ck_free(fn);
+  f = fdopen(fd, "w");
+  for (idxx = 0; idxx < num_func; idxx ++){
+    fprintf(f, "%s,%.2f\n", funclist[idxx]->name, func_cov_table[idxx] * 100);
+  }
+  fclose(f);
+
 }
-
-
-static void record_cov(u64 cur_min){
-	u8 * fn = alloc_printf("%s/function_cov.txt", out_dir);
-	FILE* f2 = fopen(fn, "a");
-	if (f2 == NULL) PFATAL("Can't not open '%s'", fn);
-	static char recorded = 0;
-	if (!recorded){
-		recorded = 1;
-		fprintf(f2, "min,func_name,cov,selected,num Of exec\n");
-	}
-	int i = 0;
-	for ( i = 0; i < num_func; i ++){
-		fprintf(f2, "%llu,%s,%lf,%u,%llu\n",cur_min, funclist[i]->name, funclist[i]->cov,
-							funclist[i]->selected, funclist[i]->exec);
-	}
-	ck_free(fn);
-	fclose(f2);
-}
-
-static void record_score(){
-	static int t = 0;
-	u8 * fn = alloc_printf("%s/score/score-%d.txt", out_dir, t);
-	t++;
-	FILE* f2 = fopen(fn, "w");
-	if (f2 == NULL) PFATAL("Can't not open '%s'", fn);
-	fprintf(f2, "target : %s, cov : %lf\n", funclist[target_func]->name, funclist[target_func]->cov);
-	fprintf(f2, "TCid, relscore, num Of Exec., # of selected, num Of Discovered TC\n");
-	struct queue_entry * q = queue;
-	int id = 0;
-	while(q){
-		fprintf(f2, "%d,%lf,%llu,%u,%u\n", id++, q->relscore, q->numOfExec, q->selected, q->discovered);
-		q = q->next;
-	}
-	ck_free(fn);
-	fclose(f2);
-}
-
-static void record_relevance(){
-  FILE* f;
-	static int t = 0;
-	u8 * fn = alloc_printf("%s/relevance/relevance-%d.txt", out_dir, t);
-	t++;
-	s32 fd;
-	fd = open(fn, O_WRONLY | O_CREAT| O_EXCL, 0600);
-
-	if (fd < 0) return;
-
-	f = fdopen(fd, "w");
-	if (!f){ close(fd); PFATAL("Can't not open '%s'", fn);}
-	ck_free(fn);
-
-	fprintf(f,"target func, second func, relevance, node coverage\n");
-	//record initial relevance - cheong
-	int idx1, idx2;
-	for (idx1 = 0; idx1 < num_func; idx1++){
-			struct queue_entry * q3 = queue;
-			u32 idx1num = 0;
-			while(q3){
-				if(q3-> covered_func[idx1]) idx1num ++;
-				q3 = q3->next;
-			}
-			for (idx2 = 0; idx2 < num_func; idx2++){
-				u32 idx2num = 0;
-				if ( idx1 == idx2) continue;
-				q3 = queue;
-				while(q3){
-					if(q3-> covered_func[idx2] && q3->covered_func[idx1]) idx2num++;
-					q3 = q3->next;
-				}
-				fprintf(f, "%s, %s, %lf, %lf \n", funclist[idx1]->name, funclist[idx2]->name,
-							(double) idx2num++ / idx1num++,
-							funclist[idx1] -> cov);
-			}
-	}
-
-	close(fd);
-
-	}
 
 void initial_fuzz(char ** argv){
 	if (!queue_cur) FATAL("No initial seed for initial seed!!");
@@ -8104,73 +7993,99 @@ void initial_fuzz(char ** argv){
 		out_buf[stage_cur] = init_v;
 		show_stats();
 	}
-
-	direct_start = 1;
 }
 	
-void check_func_file(void){
-		//cheong
-	if (func_file) {
-		FILE * funcf = fopen(func_file, "r");
-		if (funcf == NULL) FATAL("Can't open given function info file");
-		char func_name[32];
-		unsigned int num_node = 0;
-		unsigned int func_idx = 0;
-		unsigned int num_func_check = 0;
-		unsigned char func_line = 1;
-		if(fscanf(funcf, "%u\n", &num_func) != 1)
-			printf("Warning, the FInfo.txt file can be ill-formatted file");
-		
-		funclist = (struct func **) malloc (sizeof(struct func *) * num_func);
-		if (funclist == NULL) FATAL("malloc failed");
-		while(!feof(funcf)){
-			if(func_idx >= num_func) break;
-			if (func_line){ //function line
-				if(fscanf(funcf, "%s %u\n", func_name,&num_node) != 2)
-					printf("Warning, the FInfo.txt file can be ill-formatted file");
-				if (num_node){
-					num_func_check ++;
-					funclist[func_idx] = (struct func *) malloc (sizeof(struct func));
-					if (funclist[func_idx] == NULL) FATAL("malloc failed");
-					strncpy(funclist[func_idx] -> name, func_name, sizeof(func_name)-1);
-					funclist[func_idx] -> numOfNodes = num_node;
-					funclist[func_idx] -> nodes = (u32 *)malloc(sizeof(u32) * num_node);
-					funclist[func_idx] -> nodecov = (u8 *)malloc(sizeof(u8) * num_node);
-					memset(funclist[func_idx]->nodecov, 0, sizeof(u8) * num_node);
-					funclist[func_idx] -> cov = 0.0;
-					funclist[func_idx] -> selected = 0;
-					funclist[func_idx] -> maxNumOfCoveredNode = 0;
-					funclist[func_idx] -> exec = 0;
-					funclist[func_idx] -> saturated = 0;
-					func_idx++;
-					func_line--;
-				}
-			} else { // node line
-				u32 node_id = 0;
-				if(fscanf(funcf, "%d\n", &node_id) != 1)
-					printf("Warning, the FInfo.txt file can be ill-formatted file");
-				(funclist[func_idx - 1] -> nodes)[num_node - 1] = node_id;
-				num_node--;
-				if (!num_node) func_line++;
-			}
-		}
-
-		//For debug
-		
-		if (num_func_check != num_func){
-				num_func = num_func_check;
-		}
-		u8 idx2 = 0;
-		printf("numOf func : %u\n", num_func);
-		for (idx2 = 0; idx2 < num_func; idx2 ++){
-			struct func * tmpfunc = funclist[idx2];
-			printf("func name : %s, #ofnode : %u\n", tmpfunc->name, tmpfunc->numOfNodes);
-			u32 idx3 = 0;
-			for (idx3 = 0; idx3 < tmpfunc->numOfNodes; idx3 ++){
-				//printf("%u\n", tmpfunc->nodes[idx3]);
-			}
+void read_func_file(void){
+	FILE * funcf = fopen(func_file, "r");
+	if (funcf == NULL) FATAL("Can't open given function info file");
+	char func_name[100];
+	num_branch = 0;
+	u32 func_idx = 0;
+  u32 branch_idx = 0;
+  u32 i,j;
+	if(fscanf(funcf, "%u\n", &num_func) != 1)
+  	FATAL("Wrong FInfo file format, can't get # of func, first line");
+	funclist = (struct func **) malloc (sizeof(struct func *) * num_func);
+	if (funclist == NULL) FATAL("malloc failed");
+	while(!feof(funcf)){
+		if(func_idx >= num_func) break;
+		if(fscanf(funcf, "%u %s\n",&num_branch, func_name) != 2)
+			FATAL("Wrong FInfo file format, can't get func name and # of cond");
+		if (num_branch){
+			funclist[func_idx] = (struct func *) malloc (sizeof(struct func));
+			if (funclist[func_idx] == NULL) FATAL("malloc failed");
+			strncpy(funclist[func_idx] -> name, func_name, 31);
+			funclist[func_idx] -> num_branch = num_branch;
+      funclist[func_idx] -> branch_idx = branch_idx;
+			func_idx++;
+      branch_idx += num_branch;
 		}
 	}
+  fclose(funcf);
+
+  num_func = func_idx;
+  num_branch = branch_idx;
+  //For debug
+  
+  /*
+  printf("# of functions : %u\n", num_func);
+	for (i = 0; i < num_func; i ++){
+		struct func * tmpfunc = funclist[i];
+		printf("function name : %s, # of branches : %u, b_index: %u\n", tmpfunc->name, tmpfunc->num_branch, tmpfunc->branch_idx);
+	} */
+  
+
+  func_exec_table = (u32 **) malloc(sizeof(u32*) * num_func + sizeof(u32) * num_func * num_func);
+  func_exec_list = (u8 *) malloc (sizeof (u8) * num_func);
+  if (func_exec_table ==NULL) FATAL("malloc failed");
+  u32 * ptr = (u32 *) (func_exec_table + num_func);
+  for (i = 0; i < num_func; i++){
+    func_exec_table[i] = ptr + num_func * i;
+  }
+  for (i = 0; i < num_func; i ++ ){
+    for (j = 0; j < num_func; j ++) {
+      func_exec_table[i][j] = 0;
+    }
+  }
+#ifndef REL_FUNC
+  cmp_exec_table = (u32 ***) malloc(sizeof(u32**) * num_func);
+  if (cmp_exec_table == NULL) FATAL("malloc failed on branch_exec_table");
+  for (i = 0; i < num_func; i ++) {
+    u32 func_num_branch = funclist[i]-> num_branch;
+    cmp_exec_table[i] = (u32 **) malloc(sizeof(u32 *) * func_num_branch + sizeof(u32) * func_num_branch * func_num_branch);
+    ptr = (u32 *) (cmp_exec_table[i] + func_num_branch);
+    for ( j = 0; j < func_num_branch; j ++){
+      cmp_exec_table[i][j] = ptr + func_num_branch  * j;
+    }
+  }
+  u32 k;
+  for (i =0; i < num_func ; i ++){
+    for (j = 0; j < funclist[i]->num_branch; j++){
+      for (k = 0; k < funclist[i] -> num_branch; k++){
+        cmp_exec_table[i][j][k] = 0;
+      }
+    }
+  }
+#endif
+  //cmpid -> func
+  cmp_func_table = (u32 *) malloc(sizeof(u32) * num_branch);
+  cmp_cov_table = (u8*) calloc(sizeof(u8), num_branch);
+  cmp_rel_table = (u8*) malloc(sizeof(u8)* num_branch);
+  func_rel_table = (double *) malloc(sizeof(double) * num_func);
+  func_cov_table = (double *) malloc(sizeof(double) * num_func);
+  if (cmp_func_table == NULL) FATAL("malloc failed");
+  if (cmp_cov_table == NULL) FATAL("malloc failed");
+  if (cmp_rel_table == NULL) FATAL("malloc failed");
+  if (func_rel_table == NULL) FATAL("malloc failed");
+  for (i = 0; i < num_func; i ++){
+    for ( j = 0 ; j < funclist[i] -> num_branch; j++){
+      cmp_func_table[funclist[i]-> branch_idx + j] = i;
+    }
+  }
+
+  char * tmp = alloc_printf("%u", num_branch);
+  setenv("AFL_BRANCH_NUM", (const char*) tmp, 1);
+  ck_free(tmp);
 }
 
 /* Set up signal handlers. More complicated that needs to be, because libc on
@@ -8321,16 +8236,6 @@ static void save_cmdline(u32 argc, char** argv) {
 
 #ifndef AFL_LIB
 
-void handler(int sig){
-	void * array[10];
-	size_t size;
-	size = backtrace(array,10);
-  fprintf(stderr, "Segmentation Fault\n");
-	fprintf(stderr, "stage : %s\n", stage_name);
-	exit(1);
-
-}
-
 /* Main entry point */
 
 int main(int argc, char** argv) {
@@ -8343,7 +8248,6 @@ int main(int argc, char** argv) {
   u8  exit_1 = !!getenv("AFL_BENCH_JUST_ONE");
   char** use_argv;
 
-	signal(SIGSEGV, handler);
   struct timeval tv;
   struct timezone tz;
 	satTimeout = totalTimeout * 5 / 1000;
@@ -8531,14 +8435,6 @@ int main(int argc, char** argv) {
         func_file = optarg;
         break;
 			
-			case 'I': /* initial fuzzing strategy */
-				if (initial_fuzzing) FATAL("Multiple -I options not supported");
-				if (!func_file) FATAL ("-I option need -F.");
-				//0 for no initial, 1 for perfuzz, 2 for time.	
-				initial_fuzzing = atoi(optarg);
-				if (initial_fuzzing == 0) direct_start = 1;
-				break;
-
 			case 'p':
 				if (direct_prob1 == -1){
 					direct_prob1 = atoi(optarg);
@@ -8555,10 +8451,12 @@ int main(int argc, char** argv) {
 
   if (optind == argc || !in_dir || !out_dir) usage(argv[0]);
 
-	check_func_file();
-
   setup_signal_handlers();
   check_asan_opts();
+
+  if (func_file) {
+	  read_func_file();
+  }
 
   if (sync_id) fix_up_sync();
 
@@ -8606,8 +8504,8 @@ int main(int argc, char** argv) {
   bind_to_free_cpu();
 #endif /* HAVE_AFFINITY */
 
-  //check_crash_handling();
-  //check_cpu_governor();
+  check_crash_handling();
+  check_cpu_governor();
 
   setup_post();
   setup_shm();
@@ -8618,7 +8516,6 @@ int main(int argc, char** argv) {
   load_auto();
 
 	outdir_set = 1;
-	record_init();
 
   pivot_inputs();
 
@@ -8642,10 +8539,6 @@ int main(int argc, char** argv) {
   perform_dry_run(use_argv);
 
   cull_queue();
-
-	target_func = -1;
-	//select a function as target with node coverage. - cheong
-	select_target(use_argv);
 
   show_init_stats();
 
@@ -8671,7 +8564,10 @@ int main(int argc, char** argv) {
     cull_queue();
 		
 		//select a function as target with node coverage. - cheong
-		select_target(use_argv);
+    if (target_iter > TARGET_RUN_TIME){
+		  select_target();
+      target_iter = 0;
+    }
 
     if (!queue_cur) {
 
@@ -8709,11 +8605,6 @@ int main(int argc, char** argv) {
 
     }
 		
-		//PerfFuzz style initial fuzzing
-		if ((initial_fuzzing == 1) && !direct_start) {
-			initial_fuzz(use_argv);
-		}
-
     skipped_fuzz = fuzz_one(use_argv);
 
     if (!stop_soon && sync_id && !skipped_fuzz) {
@@ -8730,18 +8621,11 @@ int main(int argc, char** argv) {
     if (stop_soon) break;
 
 		//back to normal queue;
-		if (using_func){
-			funcqueue_cur = funcqueue_cur -> funcnext;
-			queue_cur = old_queue_cur;
-			current_func_entry ++;
-		} else {
-    	queue_cur = queue_cur->next;
-    	current_entry++;
-		}
-		using_func = 0;
+    queue_cur = queue_cur->next;
+    current_entry++;
   }
 
-	//record_func_cov();
+	record_func();
 	
   if (queue_cur) show_stats();
   write_bitmap();
@@ -8764,7 +8648,21 @@ stop_fuzzing:
   }
 
   fclose(plot_file);
-	if (valrecfile != NULL) fclose(valrecfile);
+  if (funclist) {
+    int i;
+    for (i = 0; i < num_func; i ++){
+      free(funclist[i]);
+    }
+    free(funclist);
+  }
+  if (func_exec_table) free(func_exec_table);
+  if (func_exec_list) free(func_exec_list);
+  if (cmp_exec_table) free(cmp_exec_table);
+  if (func_cov_table) free(func_cov_table);
+  if (cmp_func_table) free(cmp_func_table);
+  if (cmp_cov_table) free(cmp_cov_table);
+  if (cmp_rel_table) free(cmp_rel_table);
+  
   destroy_queue();
   destroy_extras();
   ck_free(target_path);

@@ -14,3 +14,6 @@ afl-gotcpu
 afl-showmap
 afl-tmin
 afl-clang-fast++
+out*/
+subjects/
+FInfos/
