@@ -34,7 +34,7 @@
 
 #define USE_COLOR
 
-#undef REL_FUNC
+#define REL_FUNC
 
 #define REL_FUNC_THRESHOLD 0.95
 #define REL_CMP_THRESHOLD 0.8

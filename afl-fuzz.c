@@ -260,19 +260,19 @@ static u32 num_revived = 0;
 static u32 num_done_branch = 0;
 static u32 num_reached_branch = 0;
 static double rel_score = 1.0;
+static double sum_exec_rel_func = 0.0;
+#ifndef REL_FUNC
 static u32 num_rel_exec_branch = 0;
 static u32 num_exec_branch = 0;
-static u32 num_exec_func = 0;
-static double sum_exec_rel_func = 0.0;
-
-static u32 target_func = -1;
-static u32 target_cmp = -1;
 static u32 target_covered = 0;
-static u32 num_rel_func;
-static u32 num_rel_branch;
-#ifdef REL_FUNC
+static u32 target_cmp = -1;
+#else
 static double mincov;
 #endif
+
+static u32 target_func = -1;
+static u32 num_rel_func;
+static u32 num_rel_branch;
 // function relevance variables end
 
 #ifdef HAVE_AFFINITY
@@ -1458,11 +1458,8 @@ static void select_rel_func() {
   for (i = 0; i < num_func; i ++){
     double rel = ((double) func_exec_table[target_func][i]) / target_exec;
     u32 bid = funclist[i] ->branch_idx;
-    for (j = bid; j < bid + funclist[i]->num_branch; j ++){
-      cmp_rel_table[j] = (rel >= REL_FUNC_THRESHOLD);
-    }
+    func_rel_table[i] = rel;
     num_rel_func += (rel >= REL_FUNC_THRESHOLD);
-    num_rel_branch += (rel >= REL_FUNC_THRESHOLD) * funclist[i]->num_branch;
   }
 }
 #else
@@ -1506,7 +1503,7 @@ static void select_target(){
   if (target_func == -1) return;
   
   //select one of these
-#ifdef REL_FUND
+#ifdef REL_FUNC
   select_rel_func();
 #else
   select_rel_branch();
@@ -4562,16 +4559,15 @@ static void show_stats(void) {
   sprintf(tmp,"%5u/%5u/%5u           ",num_branch, num_done_branch, num_reached_branch);
   SAYF(cRST "%s" bSTG bVR bH20 bH2 bH2 bV "\n", tmp);
 
-  if (target_cmp != -1){
+  if (guiding){
 #ifdef REL_FUNC
-  SAYF(bV bSTOP cGRA " rel / all :" cRST " %3u/%5u" cGRA ", target b/f: " cRST "%3u(%5.2f%), %4.3f"
-        ,num_rel_exec_branch, num_rel_branch, target_func, mincov * 100, rel_score);
-  SAYF(cGRA ", # of rel func : " cRST "%5u  " cRGA bRB "\n", num_rel_func);
+  SAYF(bV bSTOP cGRA " func rel / all :" cRST " %4.1f/%3u", sum_exec_rel_func, num_rel_func);
+  SAYF(cGRA " target b/f: " cRST "%3u(%5.2f%), %4.3f\n", target_func, mincov * 100, rel_score);
 #else
   SAYF(bV bSTOP cGRA " rel / all :" cRST " %3u/%5u" cGRA " target b/f: " cRST "%5u,%4u, %4.3f"
         ,num_rel_exec_branch, num_rel_branch, target_cmp, target_func, rel_score);
   SAYF(cGRA " # of rel func : " cRST "%5u  " cGRA bRB "\n" , num_rel_func);
-  SAYF(bV bSTOP " func rel / all : " cRST "%4.1f/%3u", sum_exec_rel_func, num_exec_func);
+  SAYF(bV bSTOP " func rel / all : " cRST "%4.1f/%3u", sum_exec_rel_func, num_rel_func);
   SAYF(cGRA " target_success : " cRST "%2u", target_covered);
   SAYF(cGRA " revived : " cRST "%5u  " cGRA bRB "\n", num_revived);
 #endif
@@ -4989,12 +4985,11 @@ static double calculate_relscore() {
   for (i = 0; i < num_func; i ++) {
     if (func_exec_list[i]) {
       sum_exec_rel_func += (func_rel_table[i] > REL_FUNC_THRESHOLD) ? func_rel_table[i] : 0.0;
-    } 
+    }
   }
 
-  //if (num_exec_branch == 0) return sum_exec_rel_func / num_exec_func;
 #ifdef REL_FUNC
-  return sum_exec_rel_func / num_rel_func;
+  return pow(2.0, sum_exec_rel_func / num_rel_func - 0.5);
 #else
   return (((double) num_rel_exec_branch)/ num_rel_branch) + sum_exec_rel_func / num_rel_func;
 #endif
