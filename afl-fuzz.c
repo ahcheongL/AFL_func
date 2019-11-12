@@ -4972,6 +4972,7 @@ static u32 choose_block_len(u32 limit) {
 
 static double calculate_relscore() {
   u32 i;
+#ifndef REL_FUNC
   num_exec_branch = 0;
   num_rel_exec_branch = 0;
   u32 bid = funclist[target_func] -> branch_idx;
@@ -4983,17 +4984,20 @@ static double calculate_relscore() {
       }
     }
   }
-  num_exec_func = 0;
+#endif
   sum_exec_rel_func = 0.0;
   for (i = 0; i < num_func; i ++) {
     if (func_exec_list[i]) {
-      num_exec_func ++;
       sum_exec_rel_func += (func_rel_table[i] > REL_FUNC_THRESHOLD) ? func_rel_table[i] : 0.0;
     } 
   }
 
   //if (num_exec_branch == 0) return sum_exec_rel_func / num_exec_func;
-  return (((double) num_rel_exec_branch)/ num_rel_branch) + sum_exec_rel_func / num_exec_func;
+#ifdef REL_FUNC
+  return sum_exec_rel_func / num_rel_func;
+#else
+  return (((double) num_rel_exec_branch)/ num_rel_branch) + sum_exec_rel_func / num_rel_func;
+#endif
   //return pow(2.0, (((double) num_rel_exec_branch) / num_exec_branch) - 0.5) ;
 }
 
