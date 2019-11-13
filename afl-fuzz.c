@@ -6424,7 +6424,9 @@ havoc_stage:
 
   if (stage_max < HAVOC_MIN) stage_max = HAVOC_MIN;
   
+#ifdef REL_SCHEDULE
   stage_max = stage_max * rel_score;
+#endif
 
   temp_len = len;
 
