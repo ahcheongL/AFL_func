@@ -81,11 +81,7 @@
 /* Lots of globals, but mostly for the status UI and other things where it
    really makes no sense to haul them around as function parameters. */
 
-u64 totalTimeout = 24 * 60 * 60 * 1000;
-u64 satTimeout;
-u64 detSatTimeout;
 u64 curSatTime = 0;
-double highScore;
 
 EXP_ST u8 *in_dir,                    /* Input directory with test cases  */
           *out_file,                  /* File to fuzz, if any             */
@@ -4130,17 +4126,15 @@ static void show_stats(void) {
 	//cheong
 	u64 tmpdelta = cur_ms - start_time;
 
-	if (tmpdelta >= totalTimeout){ //timeout, terminate
-		stop_soon = 1;
-	}
-
   /* If not enough time has passed since last UI update, bail out. */
 
   if (cur_ms - last_ms < 1000 / UI_TARGET_HZ) return;
 
   /* Check if we're past the 10 minute mark. */
 
-  if (cur_ms - start_time > 10 * 60 * 1000) run_over10m = 1;
+  if (tmpdelta > 10 * 60 * 1000) run_over10m = 1;
+
+  if (tmpdelta >= TOTAL_TIMEOUT) stop_soon = 1;
 
   /* Calculate smoothed exec speed stats. */
 
@@ -5285,8 +5279,12 @@ static u8 fuzz_one(char** argv) {
        cases. */
 
     if ((queue_cur->was_fuzzed || !queue_cur->favored) &&
-        UR(100) < SKIP_TO_NEW_PROB) skip = 1;
-
+        UR(100) < SKIP_TO_NEW_PROB) 
+#ifdef REVIVE
+      skip = 1;
+#else
+      return;
+#endif
     } else if (!dumb_mode && !queue_cur->favored && queued_paths > 10) {
 
     /* Otherwise, still possibly skip non-favored cases, albeit less often.
@@ -5294,12 +5292,17 @@ static u8 fuzz_one(char** argv) {
        lower for never-fuzzed entries. */
 
     if (queue_cycle > 1 && !queue_cur->was_fuzzed) {
-
+#ifdef REVIVE
       if (UR(100) < SKIP_NFAV_NEW_PROB) skip = 1;
-
+#else
+      if (UR(100) < SKIP_NFAV_NEW_PROB) return;
+#endif
     } else {
-
+#ifdef REVIVE
       if (UR(100) < SKIP_NFAV_OLD_PROB) skip = 1;
+#else
+      if (UR(100) < SKIP_NFAV_OLD_PROB) return;
+#endif
 
     }
 
@@ -8249,9 +8252,6 @@ int main(int argc, char** argv) {
 
   struct timeval tv;
   struct timezone tz;
-	satTimeout = totalTimeout * 5 / 1000;
-	detSatTimeout = satTimeout;
-	highScore = 0.7;
 
   SAYF(cCYA "afl-fuzz " cBRI VERSION cRST " by <lcamtuf@google.com>\n");
 

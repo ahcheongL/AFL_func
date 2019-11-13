@@ -35,11 +35,13 @@
 #define USE_COLOR
 
 #define REL_FUNC
+#define REVIVE
 
 #define REL_FUNC_THRESHOLD 0.95
 #define REL_CMP_THRESHOLD 0.8
 #define SKIP_THRESHOLD 1.6
 #define TARGET_RUN_TIME 50
+#define TOTAL_TIMEOUT 24 * 60 * 60 * 1000 
 
 /* Comment out to disable fancy ANSI boxes and use poor man's 7-bit UI: */
 
