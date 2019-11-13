@@ -35,7 +35,7 @@
 #define USE_COLOR
 
 #define REL_FUNC
-#define REVIVE
+#undef REVIVE
 
 #define REL_FUNC_THRESHOLD 0.95
 #define REL_CMP_THRESHOLD 0.8

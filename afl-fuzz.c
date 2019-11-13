@@ -5283,7 +5283,7 @@ static u8 fuzz_one(char** argv) {
 #ifdef REVIVE
       skip = 1;
 #else
-      return;
+      return 1;
 #endif
     } else if (!dumb_mode && !queue_cur->favored && queued_paths > 10) {
 
@@ -5295,13 +5295,13 @@ static u8 fuzz_one(char** argv) {
 #ifdef REVIVE
       if (UR(100) < SKIP_NFAV_NEW_PROB) skip = 1;
 #else
-      if (UR(100) < SKIP_NFAV_NEW_PROB) return;
+      if (UR(100) < SKIP_NFAV_NEW_PROB) return 1;
 #endif
     } else {
 #ifdef REVIVE
       if (UR(100) < SKIP_NFAV_OLD_PROB) skip = 1;
 #else
-      if (UR(100) < SKIP_NFAV_OLD_PROB) return;
+      if (UR(100) < SKIP_NFAV_OLD_PROB) return 1;
 #endif
 
     }
