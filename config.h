@@ -34,15 +34,17 @@
 
 #define USE_COLOR
 
-#define REL_FUNC
+#define REL_MODE 1  //0 func only 1 branch only 2 both
+
 #define REVIVE
 #undef REL_SCHEDULE
 
 #define REL_FUNC_THRESHOLD 0.95
 #define REL_CMP_THRESHOLD 0.8
 #define SKIP_THRESHOLD 1.6
-#define TARGET_RUN_TIME 50
+#define TARGET_RUN_TIME 100
 #define TOTAL_TIMEOUT 24 * 60 * 60 * 1000 
+#define UPDATE_TIMEOUT 3 * 60 * 1000
 
 /* Comment out to disable fancy ANSI boxes and use poor man's 7-bit UI: */
 

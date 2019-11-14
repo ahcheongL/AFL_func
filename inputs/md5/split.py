@@ -11,10 +11,9 @@ for l in inp:
     out.close()
     idx += 1
     idx2 = 0
+    if idx > 5: 
+      break
     out = open ("md5_" + str(idx) + ".txt", "w")
-
-  if idx > 5:
-    break
 
 out.close()
 inp.close()

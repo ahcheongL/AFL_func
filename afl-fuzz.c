@@ -242,7 +242,8 @@ static u32 ** func_exec_table;
 static u8 * func_exec_list;
 static double * func_cov_table;
 static double * func_rel_table;
-static u32 *** cmp_exec_table;
+static u32 *** cmp_exec_table2;
+static u32 ** cmp_exec_table1;
 static u32 * cmp_func_table;
 static u8 * cmp_cov_table;         
 static u8 * cmp_cov_bits;
@@ -257,14 +258,14 @@ static u32 num_done_branch = 0;
 static u32 num_reached_branch = 0;
 static double rel_score = 1.0;
 static double sum_exec_rel_func = 0.0;
-#ifndef REL_FUNC
+static double minrel = 10.0;
+static double maxrel = 0.0;
 static u32 num_rel_exec_branch = 0;
-static u32 num_exec_branch = 0;
-static u32 target_covered = 0;
 static u32 target_cmp = -1;
-#else
-static double mincov;
-#endif
+static u32 update_time = 0;
+static u32 updated_cmp = 0;
+static u8 update_flag = 0;
+static u8 rel_mode = REL_MODE;
 
 static u32 target_func = -1;
 static u32 num_rel_func;
@@ -320,6 +321,8 @@ static struct queue_entry *queue,     /* Fuzzing queue (linked list)      */
 
 static struct queue_entry*
   top_rated[MAP_SIZE];                /* Top entries for bitmap bytes     */
+
+static struct queue_entry * update_queue = NULL;
 
 struct extra_data {
   u8* data;                           /* Dictionary token data            */
@@ -1350,6 +1353,50 @@ static void write_to_testcase(void * mem, u32 len);
 
 static void show_stats(void);
 
+static void update_cmp_exec(char ** argv){
+ if (update_queue == NULL) { update_queue = queue;}
+ else if (update_queue -> next == NULL) return;
+ else { update_queue = update_queue -> next; }
+ u64 update_start = get_cur_time();
+ s32 len;
+ s32 fd;
+ u8 * out_buf, * orig_in;
+ u32 i,j;
+ stage_short = "update";
+ stage_name = "update_rel";
+ stage_max = queued_paths; 
+ while (1) {
+   len = update_queue-> len;
+   stage_cur = updated_cmp;
+   fd = open(update_queue->fname, O_RDONLY);
+   if (fd < 0) PFATAL("Unable to open '%s'", update_queue -> fname);
+   orig_in = mmap(0, len, PROT_READ| PROT_WRITE, MAP_PRIVATE, fd, 0);
+   if (orig_in == MAP_FAILED) PFATAL("Unable to mmap '%s'", update_queue->fname);
+   close(fd);
+   out_buf = ck_alloc_nozero(len);
+   memcpy(out_buf, orig_in, len);
+   write_to_testcase(out_buf, len);
+   run_target(argv, exec_tmout);
+   for ( i = 0; i < num_branch; i ++ ){
+     for( j = 0; j < num_branch; j ++) {
+       if ((cmp_cov_bits[i] != 0) && (cmp_cov_bits[j] != 0)){
+         cmp_exec_table1[i][j] += 1;
+       }
+     }
+   }
+   munmap(orig_in, len);
+   ck_free(out_buf);
+   updated_cmp +=1;
+   if ((get_cur_time() - update_start) >= UPDATE_TIMEOUT) break;
+   if (update_queue -> next == NULL ) break;
+   update_queue = update_queue -> next;
+   show_stats();
+ }
+ update_flag = 0;
+ update_time += 1;
+ return;
+}
+
 static void record_cmp(){
   if (func_exec_table == NULL) return;
   if (cmp_cov_table == NULL ) return;
@@ -1374,29 +1421,45 @@ static void record_cmp(){
     }
   }
    
-#ifndef REL_FUNC
-  if (target_cmp != -1) {
-    u8 target_cov = cmp_cov_bits[target_cmp];
-    if ((target_cov & 1) && (target_cov != 1)) {target_covered += 1;}
-  }
-  for ( i = 0; i < num_branch; i ++) {
-    u32 func_idx = cmp_func_table[i];
-    u32 bid = funclist[func_idx] -> branch_idx;
-    for ( j = 0; j < funclist[func_idx] -> num_branch ; j ++){
-      if ((cmp_cov_bits[i] != 0) && (cmp_cov_bits[j + bid] != 0)) {
-        cmp_exec_table[func_idx][i - bid][j] += 1;
+  if (rel_mode == 2){ 
+    for ( i = 0; i < num_branch; i ++) {
+      u32 func_idx = cmp_func_table[i];
+      u32 bid = funclist[func_idx] -> branch_idx;
+      for ( j = 0; j < funclist[func_idx] -> num_branch ; j ++){
+        if ((cmp_cov_bits[i] != 0) && (cmp_cov_bits[j + bid] != 0)) {
+          cmp_exec_table2[func_idx][i - bid][j] += 1;
+        }
       }
     }
   }
-#endif
 } 
 
 
-#ifdef REL_FUNC
-static void select_mincov() {
+static void select_func() {
   //select target function based on coverage.
   u32 i,j;
-  mincov = 100.0;
+  for (i = target_func + 1; i < num_func; i ++){
+    u32 num_covered = 0;
+    u32 bid = funclist[i] -> branch_idx;
+    u32 func_num_branch = funclist[i] -> num_branch;
+    for (j = bid; j < bid + func_num_branch; j++){
+      u8 cov = cmp_cov_table[j];
+      if (cov & 1 ) {
+        if (cov != 1) {
+          num_covered += 2;
+        } else {
+          num_covered += 1;
+        }
+      } else {
+        if (cov != 0) {
+          num_covered += 1;
+        }
+      }
+    }
+    double cov = ((double) num_covered) / (func_num_branch * 2);
+    func_cov_table[i] = cov;
+    if ((cov != 0.0) && (cov < 1.0)) {target_func = i; break;}
+  }
   for (i = 0; i < num_func; i ++){
     u32 num_covered = 0;
     u32 bid = funclist[i] -> branch_idx;
@@ -1417,10 +1480,9 @@ static void select_mincov() {
     }
     double cov = ((double) num_covered) / (func_num_branch * 2);
     func_cov_table[i] = cov;
-    if ((cov != 0.0) && (mincov > cov)) { mincov = cov; target_func = i;}
-  }
+    if ((cov != 0.0) && (cov < 1.0)) {target_func = i; break;}
+  } 
 }
-#else
 static void select_branch() {
   //select a reached but uncovered branch.
   u32 i;
@@ -1441,34 +1503,41 @@ static void select_branch() {
     }
   }
 }
-#endif
 
-#ifdef REL_FUNC
-static void select_rel_func() {
+static void get_rel_func() {
   u32 target_exec = func_exec_table[target_func][target_func];
-  u32 i,j; 
+  u32 i; 
   num_rel_func = 0;
-  num_rel_branch = 0;
   if (target_exec == 0) {guiding = 0; return;}
   guiding = 1;
   for (i = 0; i < num_func; i ++){
     double rel = ((double) func_exec_table[target_func][i]) / target_exec;
-    u32 bid = funclist[i] ->branch_idx;
     func_rel_table[i] = rel;
     num_rel_func += (rel >= REL_FUNC_THRESHOLD);
   }
 }
-#else
-static void select_rel_branch() {
+static void get_rel_branch() {
+  u32 i;
+  u32 target_exec = cmp_exec_table1[target_cmp][target_cmp];
+  if (target_exec == 0) {guiding = 0; return;}
+  guiding = 1;
+  num_rel_branch = 0;
+  for (i = 0; i < num_branch; i++){
+    double rel = ((double) cmp_exec_table1[target_cmp][i]) / target_exec;
+    cmp_rel_table[i] = (rel >= REL_CMP_THRESHOLD);
+    num_rel_branch += (rel >= REL_CMP_THRESHOLD);
+  }
+}
+static void get_rel_func_branch() {
   u32 fidx = funclist[target_func] -> branch_idx;
-  u32 target_exec = cmp_exec_table[target_func][target_cmp - fidx][target_cmp - fidx];
+  u32 target_exec = cmp_exec_table2[target_func][target_cmp - fidx][target_cmp - fidx];
   u32 i;
   if (target_exec == 0 ) {guiding = 0; return;}
   guiding = 1;
   num_rel_branch = 0;
   num_rel_func = 0; 
   for (i = 0; i < funclist[target_func] -> num_branch; i ++) {
-    double rel = ((double) cmp_exec_table[target_func][target_cmp - fidx][i]) / target_exec;
+    double rel = ((double) cmp_exec_table2[target_func][target_cmp - fidx][i]) / target_exec;
     cmp_rel_table[i + fidx] = (rel >= REL_CMP_THRESHOLD);
     num_rel_branch += (rel >= REL_CMP_THRESHOLD);
   }
@@ -1479,7 +1548,6 @@ static void select_rel_branch() {
     num_rel_func += (rel >= REL_FUNC_THRESHOLD);
   }
 }
-#endif
 /*
 	choose one of function as a target, save the index into global variable target_func.
 	calculate relevance of each function with the target function
@@ -1489,21 +1557,21 @@ static void select_target(){
 	stage_short = "Select target";
 	stage_max = 0;
 	stage_name = "Select target";
+
+  minrel = 10.0;
+  maxrel = 0.0;
   
   //either one of these
-#ifdef REL_FUNC
-  select_mincov();
-#else
-  select_branch();
-#endif
-  if (target_func == -1) return;
-  
-  //select one of these
-#ifdef REL_FUNC
-  select_rel_func();
-#else
-  select_rel_branch();
-#endif
+  if (rel_mode == 0){
+    select_func();
+    if (target_func == -1) return;
+    get_rel_func();
+  } else {
+    select_branch();
+    if (target_cmp == -1) return;
+    if (rel_mode == 1) get_rel_branch();
+    if (rel_mode == 2) get_rel_func_branch();
+  }
 }
 
 /* The second part of the mechanism discussed above is a routine that
@@ -4136,11 +4204,12 @@ static void show_stats(void) {
 
   if (tmpdelta >= TOTAL_TIMEOUT) stop_soon = 1;
 
+  if (!update_flag && (tmpdelta > 1 * 60 * 1000) && (update_time <= (tmpdelta / 1000 / 60 / 60))) update_flag = 1;
   /* Calculate smoothed exec speed stats. */
 
   if (!last_execs) {
   
-    avg_exec = ((double)total_execs) * 1000 / (cur_ms - start_time);
+    avg_exec = ((double)total_execs) * 1000 / tmpdelta;
 
   } else {
 
@@ -4553,19 +4622,30 @@ static void show_stats(void) {
   sprintf(tmp,"%5u/%5u/%5u           ",num_branch, num_done_branch, num_reached_branch);
   SAYF(cRST "%s" bSTG bVR bH20 bH2 bH2 bV "\n", tmp);
 
+
   if (guiding){
-#ifdef REL_FUNC
-  SAYF(bV bSTOP cGRA " func rel / all :" cRST " %4.1f/%3u", sum_exec_rel_func, num_rel_func);
-  SAYF(cGRA " target b/f: " cRST "%3u(%5.2f%), %4.3f\n", target_func, mincov * 100, rel_score);
-#else
-  SAYF(bV bSTOP cGRA " rel / all :" cRST " %3u/%5u" cGRA " target b/f: " cRST "%5u,%4u, %4.3f"
-        ,num_rel_exec_branch, num_rel_branch, target_cmp, target_func, rel_score);
-  SAYF(cGRA " # of rel func : " cRST "%5u  " cGRA bRB "\n" , num_rel_func);
-  SAYF(bV bSTOP " func rel / all : " cRST "%4.1f/%3u", sum_exec_rel_func, num_rel_func);
-  SAYF(cGRA " target_success : " cRST "%2u", target_covered);
-  SAYF(cGRA " revived : " cRST "%5u  " cGRA bRB "\n", num_revived);
-#endif
-  }
+  if (rel_mode == 0 ) {
+    SAYF(bV bSTOP cGRA " func rel / all :" cRST " %4.1f/%3u", sum_exec_rel_func, num_rel_func);
+    SAYF(cGRA " target b/f: " cRST "%3u, %4.3f\n", target_func, rel_score);
+  } else if (rel_mode == 1) {
+    SAYF(bV bSTOP cGRA " rel / all :" cRST " %3u/%5u" cGRA " target b/f: " cRST "%5u,%4u, %4.3f"
+          ,num_rel_exec_branch, num_rel_branch, target_cmp, target_func, rel_score);
+    SAYF(cGRA " # of rel func : " cRST "%5u  " cGRA bRB "\n" , num_rel_func);
+    SAYF(bV bSTOP " func rel / all : " cRST "%4.1f/%3u", sum_exec_rel_func, num_rel_func);
+    SAYF(cGRA " revived : " cRST "%5u  " cGRA bRB "\n", num_revived);
+    SAYF(bV bSTOP cGRA " update time : " cRST "%3d " cGRA "update flag : " cRST "%2u", update_time, update_flag);
+    SAYF(cGRA " updated cmp : " cRST "%5u \n", updated_cmp);
+    } else {
+      SAYF(bV bSTOP cGRA " rel / all :" cRST " %3u/%5u" cGRA " target b/f: " cRST "%5u,%4u, %4.3f"
+          ,num_rel_exec_branch, num_rel_branch, target_cmp, target_func, rel_score);
+      SAYF(cGRA " # of rel func : " cRST "%5u  " cGRA bRB "\n" , num_rel_func);
+      SAYF(bV bSTOP " func rel / all : " cRST "%4.1f/%3u", sum_exec_rel_func, num_rel_func);
+      SAYF(cGRA " revived : " cRST "%5u  " cGRA bRB "\n", num_revived);
+    }
+  } else if (rel_mode == 1) {
+    SAYF(bV bSTOP cGRA " update time : " cRST "%3d " cGRA "update flag : " cRST "%2u", update_time, update_flag);
+    SAYF(cGRA " updated cmp : " cRST "%5u \n", updated_cmp);
+   }
    
   SAYF(cGRA bLB bH30 bH20 bH2 bH bRB bSTOP cRST RESET_G1);
 
@@ -4962,32 +5042,47 @@ static u32 choose_block_len(u32 limit) {
 
 static double calculate_relscore() {
   u32 i;
-#ifndef REL_FUNC
-  num_exec_branch = 0;
-  num_rel_exec_branch = 0;
-  u32 bid = funclist[target_func] -> branch_idx;
-  for (i = bid; i < bid + funclist[target_func] -> num_branch; i++){
-    if (cmp_cov_bits[i]) {
-      num_exec_branch++;
-      if (cmp_rel_table[i]){
-         num_rel_exec_branch++;
+
+  if (rel_mode == 0 || rel_mode == 2){
+    sum_exec_rel_func = 0.0;
+    for (i = 0; i < num_func; i ++) {
+      if (func_exec_list[i]) {
+        sum_exec_rel_func += (func_rel_table[i] > REL_FUNC_THRESHOLD) ? func_rel_table[i] : 0.0;
       }
     }
   }
-#endif
-  sum_exec_rel_func = 0.0;
-  for (i = 0; i < num_func; i ++) {
-    if (func_exec_list[i]) {
-      sum_exec_rel_func += (func_rel_table[i] > REL_FUNC_THRESHOLD) ? func_rel_table[i] : 0.0;
+  if (rel_mode == 1) {
+    num_rel_exec_branch = 0;
+    for (i = 0; i < num_branch; i++){
+      if (cmp_cov_bits[i]) {
+        if (cmp_rel_table[i]){
+           num_rel_exec_branch++;
+        }
+      }
     }
+  } else if (rel_mode == 2){
+    num_rel_exec_branch = 0;
+    u32 bid = funclist[target_func] -> branch_idx;
+    for (i = bid; i < bid + funclist[target_func] -> num_branch; i++){
+      if (cmp_cov_bits[i]) {
+        if (cmp_rel_table[i]){
+           num_rel_exec_branch++;
+        }
+      }
+    }
+  } 
+  double tmpscore; 
+  if (rel_mode == 0) {
+    tmpscore = sum_exec_rel_func / num_rel_func;
+ } else if (rel_mode == 1) {
+    tmpscore = ((double) num_rel_exec_branch) / num_rel_branch;
+  } else { //both
+    tmpscore = (((double) num_rel_exec_branch)/ num_rel_branch) + sum_exec_rel_func / num_rel_func;
   }
-
-#ifdef REL_FUNC
-  return pow(2.0, sum_exec_rel_func / num_rel_func - 0.5);
-#else
-  return (((double) num_rel_exec_branch)/ num_rel_branch) + sum_exec_rel_func / num_rel_func;
-#endif
-  //return pow(2.0, (((double) num_rel_exec_branch) / num_exec_branch) - 0.5) ;
+  if (maxrel < tmpscore) maxrel = tmpscore;
+  if (minrel > tmpscore) minrel = tmpscore;
+  if (maxrel == minrel) return 1.0;
+  return pow(16.0, ((tmpscore - minrel) / (maxrel - minrel)) - 0.5);
 }
 
 /* Calculate case desirability score to adjust the length of havoc fuzzing.
@@ -7951,11 +8046,7 @@ void record_func(){
   ck_free(fn);
   f = fdopen(fd, "w");
   for (idxx = 0; idxx < num_branch; idxx++){
-    fprintf(f, "%u,", cmp_func_table[idxx]);
-  }
-  fprintf(f,"\n");
-  for (idxx = 0; idxx < num_branch; idxx++){
-    fprintf(f, "%u,", cmp_rel_table[idxx]);
+    fprintf(f, "%u,%u\n", cmp_func_table[idxx], cmp_rel_table[idxx]);
   }
   fclose(f);
 
@@ -8051,26 +8142,38 @@ void read_func_file(void){
       func_exec_table[i][j] = 0;
     }
   }
-#ifndef REL_FUNC
-  cmp_exec_table = (u32 ***) malloc(sizeof(u32**) * num_func);
-  if (cmp_exec_table == NULL) FATAL("malloc failed on branch_exec_table");
-  for (i = 0; i < num_func; i ++) {
-    u32 func_num_branch = funclist[i]-> num_branch;
-    cmp_exec_table[i] = (u32 **) malloc(sizeof(u32 *) * func_num_branch + sizeof(u32) * func_num_branch * func_num_branch);
-    ptr = (u32 *) (cmp_exec_table[i] + func_num_branch);
-    for ( j = 0; j < func_num_branch; j ++){
-      cmp_exec_table[i][j] = ptr + func_num_branch  * j;
+  if ( rel_mode == 2){
+    cmp_exec_table2 = (u32 ***) malloc(sizeof(u32**) * num_func);
+    if (cmp_exec_table2 == NULL) FATAL("malloc failed on branch_exec_table");
+    for (i = 0; i < num_func; i ++) {
+      u32 func_num_branch = funclist[i]-> num_branch;
+      cmp_exec_table2[i] = (u32 **) malloc(sizeof(u32 *) * func_num_branch + sizeof(u32) * func_num_branch * func_num_branch);
+      ptr = (u32 *) (cmp_exec_table2[i] + func_num_branch);
+      for ( j = 0; j < func_num_branch; j ++){
+        cmp_exec_table2[i][j] = ptr + func_num_branch  * j;
+      }
     }
-  }
-  u32 k;
-  for (i =0; i < num_func ; i ++){
-    for (j = 0; j < funclist[i]->num_branch; j++){
-      for (k = 0; k < funclist[i] -> num_branch; k++){
-        cmp_exec_table[i][j][k] = 0;
+    u32 k;
+    for (i =0; i < num_func ; i ++){
+      for (j = 0; j < funclist[i]->num_branch; j++){
+        for (k = 0; k < funclist[i] -> num_branch; k++){
+          cmp_exec_table2[i][j][k] = 0;
+        }
+      }
+    }
+  } else if (rel_mode == 1) {
+    cmp_exec_table1 = (u32 **) malloc (sizeof(u32*) * num_branch + sizeof(u32) * num_branch * num_branch);
+    if (cmp_exec_table1 == NULL) FATAL("malloc failed");
+    ptr = (u32 *) (cmp_exec_table1 + num_branch);
+    for ( i = 0; i < num_branch; i ++){
+      cmp_exec_table1[i] = ptr + num_branch * i;
+    }
+    for ( i = 0; i < num_branch; i ++ ){
+      for ( j = 0; j < num_branch; j ++ ){
+        cmp_exec_table1[i][j] = 0;
       }
     }
   }
-#endif
   //cmpid -> func
   cmp_func_table = (u32 *) malloc(sizeof(u32) * num_branch);
   cmp_cov_table = (u8*) calloc(sizeof(u8), num_branch);
@@ -8569,6 +8672,8 @@ int main(int argc, char** argv) {
 		  select_target();
       target_iter = 0;
     }
+    
+    if ((rel_mode == 1) && update_flag) update_cmp_exec(use_argv);
 
     if (!queue_cur) {
 
@@ -8658,7 +8763,8 @@ stop_fuzzing:
   }
   if (func_exec_table) free(func_exec_table);
   if (func_exec_list) free(func_exec_list);
-  if (cmp_exec_table) free(cmp_exec_table);
+  if (cmp_exec_table1) free(cmp_exec_table1);
+  if (cmp_exec_table2) free(cmp_exec_table2);
   if (func_cov_table) free(func_cov_table);
   if (cmp_func_table) free(cmp_func_table);
   if (cmp_cov_table) free(cmp_cov_table);
